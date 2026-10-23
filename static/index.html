@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0c0c0e" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
+  <title>MyHealth</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-dot" aria-hidden="true"></span> MyHealth
+    </div>
+    <nav>
+      <button class="nav-item active" data-view="overview">Обзор</button>
+      <button class="nav-item" data-view="workouts">Тренировки</button>
+      <button class="nav-item" data-view="chat">Спросить AI</button>
+      <button class="nav-item" data-view="sleep">Сон <span class="soon">скоро</span></button>
+      <button class="nav-item" data-view="settings">Данные и настройки</button>
+    </nav>
+    <div class="sidebar-foot" id="sync-status"></div>
+  </aside>
+
+  <main>
+    <div id="banner" class="banner hidden"></div>
+
+    <!-- Обзор -->
+    <section class="view" id="view-overview">
+      <header class="view-head">
+        <h1>Обзор</h1>
+        <div class="seg" id="period" role="group" aria-label="Период">
+          <button data-days="7">7 дн</button>
+          <button data-days="30" class="active">30 дн</button>
+          <button data-days="90">90 дн</button>
+        </div>
+      </header>
+      <div class="tiles" id="tiles"></div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Объём по неделям, мин</h2>
+          <div class="chart-box"><canvas id="chart-weekly"></canvas></div>
+        </div>
+        <div class="card">
+          <h2>Время в пульсовых зонах по неделям, мин</h2>
+          <div class="chart-box"><canvas id="chart-zones"></canvas></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Средний пульс тренировок</h2>
+        <div class="chart-box"><canvas id="chart-hr-trend"></canvas></div>
+      </div>
+      <div class="card">
+        <h2>Последние тренировки</h2>
+        <div id="recent"></div>
+      </div>
+    </section>
+
+    <!-- Тренировки -->
+    <section class="view hidden" id="view-workouts">
+      <header class="view-head">
+        <h1>Тренировки</h1>
+        <select id="sport-filter" aria-label="Вид спорта"><option value="">Все виды</option></select>
+      </header>
+      <div class="split">
+        <div class="card list-card"><div id="workout-list"></div></div>
+        <div class="card detail-card" id="workout-detail">
+          <p class="empty">Выберите тренировку из списка.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Чат -->
+    <section class="view hidden" id="view-chat">
+      <header class="view-head">
+        <h1>Спросить AI</h1>
+        <button class="btn secondary" id="chat-reset">Новый диалог</button>
+      </header>
+      <div class="card chat-card">
+        <div id="chat-log" class="chat-log">
+          <div class="chat-empty" id="chat-empty">
+            <p>AI видит все ваши тренировки и может посмотреть пульс внутри любой из них.</p>
+            <div class="suggestions">
+              <button>Как изменился мой средний пульс за последние 2 месяца?</button>
+              <button>Сколько времени я провожу в 2-й зоне и достаточно ли этого?</button>
+              <button>Разбери мою последнюю тренировку: дрейф пульса, интервалы, восстановление</button>
+              <button>Не перетренировываюсь ли я? Посмотри на нагрузку по неделям</button>
+            </div>
+          </div>
+        </div>
+        <form id="chat-form" class="chat-form">
+          <textarea id="chat-input" rows="1" aria-label="Сообщение" placeholder="Ваш вопрос…"></textarea>
+          <button class="btn" type="submit" id="chat-send">Отправить</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Сон -->
+    <section class="view hidden" id="view-sleep">
+      <header class="view-head"><h1>Сон</h1></header>
+      <div class="card">
+        <p>Раздел появится в следующей версии.</p>
+        <p class="muted">H9 сон не записывает. Данные о сне можно будет брать из Polar AccessLink
+          (если появятся часы Polar) или из экспорта Apple Health / других устройств.</p>
+      </div>
+    </section>
+
+    <!-- Настройки -->
+    <section class="view hidden" id="view-settings">
+      <header class="view-head"><h1>Данные и настройки</h1></header>
+      <div class="card">
+        <h2>Polar AccessLink</h2>
+        <div id="polar-box"></div>
+      </div>
+      <div class="card">
+        <h2>Импорт файлов</h2>
+        <p class="muted">Для истории старше 30 дней: в Polar Flow откройте тренировку → «Экспорт сессии» → TCX или CSV. Можно выбрать сразу много файлов.</p>
+        <form id="import-form" class="row">
+          <input type="file" id="import-files" multiple accept=".tcx,.csv,.gz">
+          <button class="btn secondary" type="submit">Импортировать</button>
+        </form>
+        <div id="import-result" class="muted"></div>
+      </div>
+      <div class="card">
+        <h2>Пульсовые зоны</h2>
+        <form id="hrmax-form" class="row end">
+          <label class="field">HRmax, уд/мин <input type="number" id="hrmax" min="120" max="230" inputmode="numeric"></label>
+          <button class="btn secondary" type="submit">Сохранить и пересчитать</button>
+        </form>
+        <p class="muted">Зоны считаются как 50–60–70–80–90% от HRmax. Для тренировок из Polar берутся зоны Polar.</p>
+      </div>
+      <div class="card">
+        <h2>Демо-данные</h2>
+        <p class="muted">Сгенерировать 90 дней примерных тренировок, чтобы попробовать интерфейс и AI.</p>
+        <div class="row">
+          <button class="btn secondary" id="demo-add">Добавить демо</button>
+          <button class="btn danger" id="demo-del">Удалить демо</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
