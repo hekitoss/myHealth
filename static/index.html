@@ -82,9 +82,20 @@
         <button class="btn secondary" id="chat-reset">Новый диалог</button>
       </header>
       <div class="card chat-card">
+        <div class="chat-scope">
+          <select id="chat-sport" aria-label="Вид спорта для AI"><option value="">Все виды</option></select>
+          <div class="seg" id="chat-period" role="group" aria-label="Период для AI">
+            <button data-days="30">30 дн</button>
+            <button data-days="90">3 мес</button>
+            <button data-days="182">6 мес</button>
+            <button data-days="365">Год</button>
+            <button data-days="" class="active">Всё</button>
+          </div>
+          <span class="chat-scope-count" id="chat-scope-count"></span>
+        </div>
         <div id="chat-log" class="chat-log">
           <div class="chat-empty" id="chat-empty">
-            <p>AI видит все ваши тренировки и может посмотреть пульс внутри любой из них.</p>
+            <p>AI видит тренировки из выборки выше и может посмотреть пульс внутри любой из них.</p>
             <div class="suggestions">
               <button>Как изменился мой средний пульс за последние 2 месяца?</button>
               <button>Сколько времени я провожу в 2-й зоне и достаточно ли этого?</button>

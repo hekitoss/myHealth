@@ -14,6 +14,16 @@ db.init()
 app = FastAPI(title="MyHealth")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+
+@app.middleware("http")
+async def no_stale_frontend(request, call_next):
+    """Браузер перепроверяет index.html/app.js/style.css при каждой загрузке — иначе после
+    обновления кода может взять старый index.html к новому app.js, и интерфейс ломается."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 _oauth_states: set[str] = set()
 
 
@@ -136,12 +146,15 @@ def demo_delete():
 class ChatRequest(BaseModel):
     conversation_id: str = Field(min_length=1, max_length=64)
     message: str = Field(min_length=1, max_length=8000)
+    # Выборка тренировок для контекста: виды спорта (пусто — все) и последние N дней (None — всё время).
+    sports: list[str] = Field(default=[], max_length=50)
+    days: int | None = Field(default=None, ge=1, le=3650)
 
 
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     return StreamingResponse(
-        ai.chat_stream(req.conversation_id, req.message),
+        ai.chat_stream(req.conversation_id, req.message, req.sports, req.days),
         media_type="text/plain; charset=utf-8",
     )
 

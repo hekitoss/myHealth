@@ -3,7 +3,7 @@ const $ = (sel) => document.querySelector(sel);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const ZONE_VARS = ["--z1", "--z2", "--z3", "--z4", "--z5"];
 
-const state = { workouts: [], days: 30, charts: {}, selected: null, conversationId: newId(), status: {} };
+const state = { workouts: [], days: 30, charts: {}, selected: null, conversationId: newId(), status: {}, chatScope: loadChatScope() };
 
 const SPORT_RU = {
   RUNNING: "Бег", RUNNING_ROAD: "Бег", RUNNING_TRAIL: "Трейл", TREADMILL_RUNNING: "Бег (дорожка)",
@@ -61,6 +61,7 @@ async function loadAll() {
   renderStatus();
   renderOverview();
   renderWorkoutList();
+  renderChatScope();
   renderSettings();
   if (!state.workouts.length) banner("Пока нет тренировок. Подключите Polar, импортируйте файлы или добавьте демо-данные в разделе «Данные и настройки».");
 }
@@ -262,6 +263,7 @@ async function openWorkout(id) {
   }
   if (matchMedia("(max-width: 980px)").matches) $("#workout-detail").scrollIntoView({ behavior: "smooth", block: "start" });
   $("#ask-about").addEventListener("click", () => {
+    if (!inChatScope(w)) { state.chatScope = { sport: sportName(w.sport), days: null }; saveChatScope(); renderChatScope(); }
     show("chat");
     $("#chat-input").value = `Разбери тренировку id=${w.id} (${sportName(w.sport)}, ${fmtDate(w.start_time, true)}): как вёл себя пульс, были ли дрейф и интервалы, что можно улучшить?`;
     autoGrow();
@@ -270,6 +272,46 @@ async function openWorkout(id) {
 }
 
 // --- чат ---------------------------------------------------------------------
+
+// Выборка тренировок для AI: вид спорта (по русскому названию — «Бег» объединяет все варианты бега) и период.
+function loadChatScope() {
+  try { return { sport: "", days: null, ...JSON.parse(localStorage.getItem("chatScope")) }; } catch { return { sport: "", days: null }; }
+}
+function saveChatScope() {
+  try { localStorage.setItem("chatScope", JSON.stringify(state.chatScope)); } catch {}
+}
+function chatScopeSports() {
+  const { sport } = state.chatScope;
+  if (!sport) return [];
+  return [...new Set(state.workouts.map((w) => w.sport).filter((s) => s && sportName(s) === sport))];
+}
+function inChatScope(w) {
+  const { sport, days } = state.chatScope;
+  // Как на сервере: период считается от начала дня N дней назад.
+  const since = new Date(); since.setHours(0, 0, 0, 0); since.setDate(since.getDate() - (days || 0));
+  return (!sport || sportName(w.sport) === sport) && (!days || new Date(w.start_time) >= since);
+}
+function renderChatScope() {
+  const sel = $("#chat-sport");
+  const names = [...new Set(state.workouts.map((w) => w.sport).filter(Boolean).map(sportName))].sort((a, b) => a.localeCompare(b, "ru"));
+  if (state.chatScope.sport && !names.includes(state.chatScope.sport)) state.chatScope.sport = "";
+  sel.innerHTML = `<option value="">Все виды</option>` + names.map((n) => `<option value="${n}">${n}</option>`).join("");
+  sel.value = state.chatScope.sport;
+  document.querySelectorAll("#chat-period button").forEach((b) =>
+    b.classList.toggle("active", (Number(b.dataset.days) || null) === state.chatScope.days));
+  const n = state.workouts.filter(inChatScope).length;
+  $("#chat-scope-count").textContent = `AI видит ${n} ${plural(n, "тренировку", "тренировки", "тренировок")}`;
+}
+function plural(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many;
+}
+$("#chat-sport").addEventListener("change", (e) => { state.chatScope.sport = e.target.value; saveChatScope(); renderChatScope(); });
+document.querySelectorAll("#chat-period button").forEach((b) => b.addEventListener("click", () => {
+  state.chatScope.days = Number(b.dataset.days) || null;
+  saveChatScope();
+  renderChatScope();
+}));
 
 function addMsg(role, text = "") {
   $("#chat-empty")?.remove();
@@ -299,7 +341,7 @@ async function sendChat(text) {
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversation_id: state.conversationId, message: text }),
+      body: JSON.stringify({ conversation_id: state.conversationId, message: text, sports: chatScopeSports(), days: state.chatScope.days }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const reader = r.body.getReader();
@@ -310,6 +352,10 @@ async function sendChat(text) {
       acc += dec.decode(value, { stream: true });
       renderMarkdown(out, acc);
       out.scrollIntoView({ block: "end" });
+    }
+    if (!acc.trim()) {
+      acc = "⚠️ Сервер вернул пустой ответ. Посмотрите ошибку в окне, где запущен сервер.";
+      renderMarkdown(out, acc);
     }
   } catch (e) {
     acc += `\n\n⚠️ ${e.message}`;

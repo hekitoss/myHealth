@@ -25,5 +25,8 @@ POLAR_REDIRECT_URI = os.getenv("POLAR_REDIRECT_URI", f"{BASE_URL}/oauth2_callbac
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
 AI_MODEL = os.getenv("AI_MODEL", "gemini-3.8-flash")
 AI_THINKING = os.getenv("AI_THINKING", "high")  # minimal | low | medium | high
+# implicit — полагаемся на неявный кэш Gemini (работает и на бесплатном тарифе);
+# explicit — явный кэш контекста выборки на час (платный тариф, иначе тихо откатится на implicit)
+AI_CONTEXT_CACHE = os.getenv("AI_CONTEXT_CACHE", "implicit").lower()
 
 DEFAULT_HR_MAX = int(os.getenv("HR_MAX", "190"))

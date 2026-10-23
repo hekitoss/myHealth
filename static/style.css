@@ -262,6 +262,11 @@ input[type=file]:focus-visible::file-selector-button { box-shadow: 0 0 0 3px var
 /* --- чат -------------------------------------------------------------------- */
 
 .chat-card { display: flex; flex-direction: column; height: calc(100vh - 180px); min-height: 420px; padding: 0; overflow: hidden; }
+.chat-scope {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 12px; border-bottom: 1px solid var(--border);
+}
+.chat-scope-count { font-size: 13px; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-left: auto; }
 .chat-log { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
 .msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; overflow-wrap: anywhere; }
 .msg.user { align-self: flex-end; background: var(--primary); color: var(--primary-text); white-space: pre-wrap; border-bottom-right-radius: 4px; }
@@ -348,6 +353,9 @@ input[type=file]:focus-visible::file-selector-button { box-shadow: 0 0 0 3px var
   input[type=number], select, textarea { font-size: 16px; }
 
   .chat-card { height: calc(100dvh - 200px); min-height: 360px; }
+  .chat-scope select, .chat-scope .seg { width: 100%; }
+  .chat-scope .seg button { flex: 1; height: 36px; padding: 0 6px; }
+  .chat-scope-count { margin-left: 0; }
   .chat-log { padding: 16px; }
   .msg { max-width: 92%; }
   .suggestions { grid-template-columns: 1fr; }

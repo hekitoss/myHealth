@@ -39,6 +39,19 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 
+_data_version = 0
+
+
+def data_version():
+    """Растёт при каждом изменении тренировок — по нему сбрасывается кэш контекста AI."""
+    return _data_version
+
+
+def _touch():
+    global _data_version
+    _data_version += 1
+
+
 @contextmanager
 def session():
     conn = sqlite3.connect(DB_PATH)
@@ -126,6 +139,7 @@ def upsert_workout(w, hr=None, rate_s=1):
                 "ON CONFLICT(workout_id) DO UPDATE SET rate_s = excluded.rate_s, data = excluded.data",
                 (wid, rate_s, ",".join(str(int(v)) for v in hr)),
             )
+    _touch()
     return wid, existing is None
 
 
@@ -161,7 +175,9 @@ def get_workout(wid):
 
 def delete_source(source):
     with session() as c:
-        return c.execute("DELETE FROM workouts WHERE source = ?", (source,)).rowcount
+        deleted = c.execute("DELETE FROM workouts WHERE source = ?", (source,)).rowcount
+    _touch()
+    return deleted
 
 
 def recompute_zones():
@@ -178,6 +194,7 @@ def recompute_zones():
                 "UPDATE workouts SET zones_json = ? WHERE id = ?",
                 (json.dumps(metrics.zone_seconds(hr, r["rate_s"], limit)), r["id"]),
             )
+    _touch()
 
 
 def count_workouts():
