@@ -7,6 +7,7 @@
 (db.data_version). Текст для одной выборки не меняется между вопросами, поэтому Gemini
 переиспользует его через неявный кэш; при AI_CONTEXT_CACHE=explicit создаётся явный кэш Gemini.
 """
+import json
 import logging
 import time
 from datetime import date, timedelta
@@ -35,6 +36,7 @@ INSTRUCTIONS = """Ты — помощник по анализу трениров
 
 В данных только тренировки из выборки, которую пользователь задал в интерфейсе (вид спорта и период).
 Если вопрос про тренировки вне выборки — скажи, что их нужно добавить в выборку над чатом.
+В разделе «Запланировано» (если он есть) — будущие тренировки из плана пользователя.
 
 Для деталей пульса внутри тренировки (динамика, восстановление, дрейф, интервалы) вызывай
 инструмент get_workout_hr с id тренировки.
@@ -102,8 +104,23 @@ def build_context(sports=None, days=None):
         f"## Профиль\nHRmax для зон: {db.hr_max()} уд/мин. Зоны: Z1 50–60%, Z2 60–70%, Z3 70–80%, "
         f"Z4 80–90%, Z5 90–100% HRmax.\n\n"
         f"## Тренировки ({len(workouts)} шт.)\n" + "\n".join(lines) +
-        f"\n\n## По неделям (последние {weeks})\n" + "\n".join(week_lines)
+        f"\n\n## По неделям (последние {weeks})\n" + "\n".join(week_lines) +
+        _planned_context()
     )
+
+
+def _planned_context():
+    planned = db.list_planned(date.today().isoformat())
+    if not planned:
+        return ""
+    lines = ["id,дата,спорт,название,мин,км,зона,пульс,темп,выполнено"]
+    for p in planned:
+        hr = "–".join(str(v) for v in (p["hr_low"], p["hr_high"]) if v)
+        lines.append(",".join(str(x if x is not None else "").replace(",", ";") for x in [
+            p["id"], p["date"], p["sport"], p["title"], p["duration_min"], p["distance_km"],
+            p["zone"] and f"Z{p['zone']}", hr, p["pace"], "да" if p["done"] else "",
+        ]))
+    return f"\n\n## Запланировано (с сегодняшнего дня, {len(planned)} шт.)\n" + "\n".join(lines)
 
 
 def _system_instruction(key):
@@ -186,6 +203,15 @@ def _int_arg(value, default=None):
     return value
 
 
+def _saved_history(conversation_id):
+    """История сохранённой сессии (только текст) — чтобы продолжить её после перезапуска сервера."""
+    saved = db.get_chat_session(conversation_id)
+    return [
+        types.Content(role="user" if m["role"] == "user" else "model", parts=[types.Part(text=m["text"])])
+        for m in (saved["messages"] if saved else [])
+    ]
+
+
 def reset(conversation_id):
     _conversations.pop(conversation_id, None)
 
@@ -197,7 +223,9 @@ def chat_stream(conversation_id, user_message, sports=None, days=None):
     """
     if conversation_id not in _conversations and len(_conversations) >= MAX_CONVERSATIONS:
         _conversations.pop(next(iter(_conversations)))
-    contents = _conversations.setdefault(conversation_id, [])
+    if conversation_id not in _conversations:
+        _conversations[conversation_id] = _saved_history(conversation_id)
+    contents = _conversations[conversation_id]
     user_turn = types.Content(role="user", parts=[types.Part(text=user_message)])
     contents.append(user_turn)
 
@@ -260,24 +288,23 @@ def chat_stream(conversation_id, user_message, sports=None, days=None):
                 ))
             contents.append(types.Content(role="user", parts=results))
             yield "\n\n"
-    except errors.ClientError as e:
+    except (errors.APIError, httpx.TransportError) as e:
         _rollback(contents, user_turn)
-        if e.code in (401, 403) or (e.code == 400 and "API key" in (e.message or "")):
-            yield "⚠️ Ключ Gemini API не подошёл. Проверьте GEMINI_API_KEY в .env."
-        elif e.code == 429:
-            yield "⚠️ Исчерпан бесплатный лимит запросов к Gemini API, попробуйте через минуту (или завтра, если кончился дневной)."
-        else:
-            yield f"⚠️ Ошибка Gemini API ({e.code}): {e.message}"
-    except errors.APIError as e:
-        _rollback(contents, user_turn)
-        yield f"⚠️ Ошибка Gemini API ({e.code}): {e.message}"
-    except httpx.TransportError:
-        _rollback(contents, user_turn)
-        yield "⚠️ Нет соединения с Gemini API."
+        yield f"⚠️ {_error_text(e)}"
     except Exception as e:  # иначе поток молча обрывается и в чате пусто
         log.exception("Ошибка в чате с AI")
         _rollback(contents, user_turn)
         yield f"⚠️ Внутренняя ошибка: {type(e).__name__}: {e}"
+
+
+def _error_text(e):
+    if isinstance(e, httpx.TransportError):
+        return "Нет соединения с Gemini API."
+    if e.code in (401, 403) or (e.code == 400 and "API key" in (e.message or "")):
+        return "Ключ Gemini API не подошёл. Проверьте GEMINI_API_KEY в .env."
+    if e.code == 429:
+        return "Исчерпан бесплатный лимит запросов к Gemini API, попробуйте через минуту (или завтра, если кончился дневной)."
+    return f"Ошибка Gemini API ({e.code}): {e.message}"
 
 
 def _rollback(contents, user_turn):
@@ -286,3 +313,116 @@ def _rollback(contents, user_turn):
         contents.pop()
     if contents:
         contents.pop()
+
+
+# --- план тренировок под цель --------------------------------------------------
+
+PLAN_HISTORY_DAYS = 180
+PLAN_SPORTS = ["RUNNING", "TREADMILL_RUNNING", "CYCLING", "INDOOR_CYCLING", "STRENGTH_TRAINING",
+               "SWIMMING", "WALKING", "HIKING", "YOGA", "OTHER"]
+
+PLAN_INSTRUCTIONS = """Ты — тренер по выносливости. Составь план тренировок под цель пользователя, опираясь
+на его историю ниже: текущий недельный объём, частоту, виды спорта, средний пульс и время в зонах.
+Начинай с объёма, близкого к текущему, наращивай его не больше чем на 10% в неделю, чередуй тяжёлые
+и лёгкие дни, оставляй дни отдыха, каждую 3–4-ю неделю и неделю перед стартом делай разгрузочной.
+Большую часть объёма — в Z1–Z2. Тренировки из раздела «Запланировано» уже стоят в плане:
+не ставь новые на эти даты и учитывай их в объёме.
+
+Для каждой тренировки укажи дату в заданном периоде, вид спорта кодом из списка, короткое название
+(«Лёгкий бег», «Интервалы 5×1 км»), длительность, дистанцию — если она важна, целевую зону и диапазон
+пульса по HRmax пользователя, темп для бега (мм:сс на км) — только если его можно оценить по истории,
+и в notes — структуру тренировки (разминка, основная часть, заминка) одной-тремя фразами.
+
+В summary по-русски, до 6 предложений, объясни логику плана и на какие цифры из истории ты опирался.
+Если истории мало — так и скажи и составь осторожный план. Ты не врач: не ставь диагнозов."""
+
+
+def _plan_schema(sports):
+    item = {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "format": "date", "description": "YYYY-MM-DD"},
+            "sport": {"type": "string", "enum": sports},
+            "title": {"type": "string"},
+            "duration_min": {"type": "integer"},
+            "distance_km": {"type": "number"},
+            "zone": {"type": "integer", "minimum": 1, "maximum": 5},
+            "hr_low": {"type": "integer"},
+            "hr_high": {"type": "integer"},
+            "pace": {"type": "string", "description": "мм:сс на км"},
+            "notes": {"type": "string"},
+        },
+        "required": ["date", "sport", "title", "duration_min"],
+    }
+    return {
+        "type": "object",
+        "properties": {"summary": {"type": "string"}, "workouts": {"type": "array", "items": item}},
+        "required": ["summary", "workouts"],
+    }
+
+
+def generate_plan(goal, start, weeks, per_week, sports=None):
+    """Черновик плана от Gemini: {"summary", "workouts"}. Ничего не сохраняет — пользователь сначала смотрит."""
+    if not is_configured():
+        raise AIError("Не найден ключ Gemini API: добавьте GEMINI_API_KEY в файл .env и перезапустите приложение.")
+    end = start + timedelta(days=weeks * 7 - 1)
+    history = {w["sport"] for w in db.list_workouts() if w["sport"]}
+    allowed = PLAN_SPORTS + sorted(history - set(PLAN_SPORTS))
+    wanted = [s for s in sports or [] if s in allowed]
+    prompt = (
+        f"Цель: {goal}\n"
+        f"Период плана: с {start.isoformat()} по {end.isoformat()} ({weeks} нед.), "
+        f"примерно {per_week} тренировок в неделю.\n"
+        f"Виды спорта: {', '.join(wanted) if wanted else 'выбери сам по истории и цели'}."
+    )
+    system = (f"{PLAN_INSTRUCTIONS}\n\n{build_context(None, PLAN_HISTORY_DAYS)}\n\n"
+              f"Сегодня {date.today().isoformat()}.")
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    try:
+        resp = client.models.generate_content(model=AI_MODEL, contents=prompt, config=types.GenerateContentConfig(
+            system_instruction=system,
+            response_mime_type="application/json",
+            response_json_schema=_plan_schema(allowed),
+            thinking_config=types.ThinkingConfig(thinking_level=AI_THINKING),
+            max_output_tokens=32000,
+        ))
+    except (errors.APIError, httpx.TransportError) as e:
+        raise AIError(_error_text(e)) from e
+    try:
+        data = json.loads(resp.text or "")
+    except ValueError:
+        log.warning("План от Gemini не разобран: %r", (resp.text or "")[:500])
+        raise AIError("Модель вернула план в неожиданном формате, попробуйте ещё раз.")
+    workouts = [w for w in (_plan_item(raw, start, end) for raw in data.get("workouts") or []) if w]
+    if not workouts:
+        raise AIError("Модель не предложила ни одной тренировки, попробуйте уточнить цель.")
+    workouts.sort(key=lambda w: w["date"])
+    return {"summary": str(data.get("summary") or ""), "workouts": workouts}
+
+
+def _plan_item(raw, start, end):
+    """Тренировка из ответа модели с проверкой полей; None — если дата вне периода или не разобрана."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        day = date.fromisoformat(str(raw.get("date", ""))[:10])
+    except ValueError:
+        return None
+    if not start <= day <= end:
+        return None
+
+    def num(key, lo, hi, digits=None):
+        v = raw.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+            return None
+        return round(v, digits) if digits else int(round(v))
+
+    def text(key, limit):
+        return str(raw.get(key) or "").strip()[:limit] or None
+
+    return {
+        "date": day.isoformat(), "sport": text("sport", 40) or "OTHER", "title": text("title", 120),
+        "duration_min": num("duration_min", 1, 1440), "distance_km": num("distance_km", 0.1, 1000, 2),
+        "zone": num("zone", 1, 5), "hr_low": num("hr_low", 40, 230), "hr_high": num("hr_high", 40, 230),
+        "pace": text("pace", 20), "notes": text("notes", 2000),
+    }

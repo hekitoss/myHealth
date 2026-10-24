@@ -20,6 +20,7 @@
     <nav>
       <button class="nav-item active" data-view="overview">Обзор</button>
       <button class="nav-item" data-view="workouts">Тренировки</button>
+      <button class="nav-item" data-view="plan">План</button>
       <button class="nav-item" data-view="chat">Спросить AI</button>
       <button class="nav-item" data-view="sleep">Сон <span class="soon">скоро</span></button>
       <button class="nav-item" data-view="settings">Данные и настройки</button>
@@ -75,12 +76,87 @@
       </div>
     </section>
 
+    <!-- План -->
+    <section class="view hidden" id="view-plan">
+      <header class="view-head">
+        <h1>План</h1>
+        <div class="row">
+          <button class="btn secondary" id="plan-ai-toggle" aria-controls="plan-ai" aria-expanded="false">Составить с AI</button>
+          <button class="btn secondary" id="plan-add">Добавить</button>
+        </div>
+      </header>
+
+      <div class="card hidden" id="plan-ai">
+        <h2>План под цель</h2>
+        <form id="plan-ai-form" class="plan-form">
+          <label class="field">Цель
+            <textarea id="plan-goal" rows="2" maxlength="300" placeholder="Например: пробежать 10 км быстрее 50 минут"></textarea>
+          </label>
+          <div class="chips" id="plan-goal-presets">
+            <button type="button">Снизить средний пульс на лёгких тренировках</button>
+            <button type="button">Подготовиться к забегу на 10 км</button>
+            <button type="button">Пробежать первый полумарафон</button>
+            <button type="button">Улучшить общую выносливость</button>
+          </div>
+          <div class="form-grid cols4">
+            <label class="field">Начало <input type="date" id="plan-start" required></label>
+            <label class="field">Недель
+              <select id="plan-weeks"><option>2</option><option selected>4</option><option>6</option><option>8</option><option>12</option><option>16</option></select>
+            </label>
+            <label class="field">Тренировок в неделю
+              <select id="plan-per-week"><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select>
+            </label>
+            <label class="field">Вид спорта <select id="plan-sport"></select></label>
+          </div>
+          <p class="muted">AI учтёт тренировки за последние полгода и то, что уже стоит в плане. План сначала покажется здесь — сохраните только то, что подходит.</p>
+          <div class="row"><button class="btn" type="submit" id="plan-generate">Составить план</button></div>
+        </form>
+        <div id="plan-proposal"></div>
+      </div>
+
+      <div class="card list-card plan-list"><div id="plan-list"></div></div>
+      <label class="check muted"><input type="checkbox" id="plan-show-past"> Показывать прошедшие</label>
+
+      <dialog class="dialog" id="plan-dialog" aria-labelledby="plan-dialog-title">
+        <form id="plan-form" class="plan-form">
+          <h2 id="plan-dialog-title">Новая тренировка</h2>
+          <div class="form-grid">
+            <label class="field">Дата <input type="date" id="pf-date" required></label>
+            <label class="field">Вид спорта <select id="pf-sport"></select></label>
+            <label class="field wide">Название <input type="text" id="pf-title" maxlength="120" placeholder="Лёгкий бег, интервалы 5×1 км…"></label>
+            <label class="field">Длительность, мин <input type="number" id="pf-duration" min="1" max="1440" inputmode="numeric"></label>
+            <label class="field">Дистанция, км <input type="number" id="pf-distance" min="0.1" max="1000" step="0.1" inputmode="decimal"></label>
+            <label class="field">Пульсовая зона
+              <select id="pf-zone"><option value="">—</option><option value="1">Z1 — восстановление</option><option value="2">Z2 — базовая</option><option value="3">Z3 — темповая</option><option value="4">Z4 — пороговая</option><option value="5">Z5 — максимальная</option></select>
+            </label>
+            <label class="field">Темп, мин/км <input type="text" id="pf-pace" maxlength="20" placeholder="5:30"></label>
+            <label class="field">Пульс от <input type="number" id="pf-hr-low" min="40" max="230" inputmode="numeric"></label>
+            <label class="field">Пульс до <input type="number" id="pf-hr-high" min="40" max="230" inputmode="numeric"></label>
+            <label class="field wide">Заметки <textarea id="pf-notes" rows="3" maxlength="2000" placeholder="Разминка, основная часть, заминка…"></textarea></label>
+            <label class="check wide"><input type="checkbox" id="pf-done"> Выполнено</label>
+          </div>
+          <div class="dialog-actions">
+            <button class="btn danger" type="button" id="pf-delete">Удалить</button>
+            <button class="btn secondary" type="button" id="pf-cancel">Отмена</button>
+            <button class="btn" type="submit">Сохранить</button>
+          </div>
+        </form>
+      </dialog>
+    </section>
+
     <!-- Чат -->
     <section class="view hidden" id="view-chat">
       <header class="view-head">
         <h1>Спросить AI</h1>
-        <button class="btn secondary" id="chat-reset">Новый диалог</button>
+        <div class="row">
+          <button class="btn secondary" id="chat-history-toggle" aria-controls="chat-history" aria-expanded="true">История</button>
+          <button class="btn secondary" id="chat-reset">Новый диалог</button>
+        </div>
       </header>
+      <div class="chat-layout" id="chat-layout">
+      <aside class="card list-card chat-history" id="chat-history" aria-label="Сохранённые диалоги">
+        <div id="chat-sessions"></div>
+      </aside>
       <div class="card chat-card">
         <div class="chat-scope">
           <select id="chat-sport" aria-label="Вид спорта для AI"><option value="">Все виды</option></select>
@@ -108,6 +184,7 @@
           <textarea id="chat-input" rows="1" aria-label="Сообщение" placeholder="Ваш вопрос…"></textarea>
           <button class="btn" type="submit" id="chat-send">Отправить</button>
         </form>
+      </div>
       </div>
     </section>
 

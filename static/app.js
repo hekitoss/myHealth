@@ -31,7 +31,9 @@ async function api(path, opts = {}) {
   const r = await fetch(path, opts);
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
-    throw new Error(body.detail || `HTTP ${r.status}`);
+    // Ошибки проверки полей FastAPI приходят списком.
+    const detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : body.detail;
+    throw new Error(detail || `HTTP ${r.status}`);
   }
   return r.json();
 }
@@ -62,6 +64,7 @@ async function loadAll() {
   renderOverview();
   renderWorkoutList();
   renderChatScope();
+  renderPlanAiSports();
   renderSettings();
   if (!state.workouts.length) banner("Пока нет тренировок. Подключите Polar, импортируйте файлы или добавьте демо-данные в разделе «Данные и настройки».");
 }
@@ -363,6 +366,7 @@ async function sendChat(text) {
   } finally {
     out.classList.remove("pending");
     $("#chat-send").disabled = false;
+    loadChatSessions();
   }
 }
 
@@ -377,11 +381,358 @@ $("#chat-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat($("#chat-input").value); }
 });
 document.querySelectorAll(".suggestions button").forEach((b) => b.addEventListener("click", () => sendChat(b.textContent)));
-$("#chat-reset").addEventListener("click", async () => {
-  await fetch(`/api/chat/${state.conversationId}`, { method: "DELETE" });
+function newChat() {
+  // Прошлый диалог остаётся в истории — его можно открыть и продолжить.
   state.conversationId = newId();
   $("#chat-log").innerHTML = `<div class="chat-empty" id="chat-empty"><p>Новый диалог. Спросите что-нибудь о своих тренировках.</p></div>`;
+  renderChatSessions();
+}
+$("#chat-reset").addEventListener("click", () => { if (!$("#chat-send").disabled) newChat(); });
+
+// --- история диалогов --------------------------------------------------------
+
+state.chatSessions = [];
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+async function loadChatSessions() {
+  try { state.chatSessions = await api("/api/chat/sessions"); } catch { return; }
+  renderChatSessions();
+}
+
+function renderChatSessions() {
+  const box = $("#chat-sessions");
+  if (!state.chatSessions.length) {
+    box.innerHTML = `<p class="empty">Здесь появятся ваши диалоги с AI.</p>`;
+    return;
+  }
+  box.innerHTML = state.chatSessions.map((s) => `
+    <div class="srow${s.id === state.conversationId ? " active" : ""}" data-id="${esc(s.id)}" tabindex="0" role="button">
+      <span class="title" title="${esc(s.title)}">${esc(s.title)}</span>
+      <span class="sub">${fmtDate(s.updated_at, true)} · ${s.questions} ${plural(s.questions, "вопрос", "вопроса", "вопросов")}</span>
+    </div>`).join("");
+  box.querySelectorAll(".srow").forEach((row) => {
+    row.addEventListener("click", () => openChatSession(row.dataset.id));
+    row.addEventListener("keydown", (e) => { if (e.target === row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openChatSession(row.dataset.id); } });
+    row.addEventListener("contextmenu", (e) => { e.preventDefault(); openSessionMenu(row, e); });
+    // iOS не присылает contextmenu — открываем меню долгим нажатием сами.
+    let timer;
+    row.addEventListener("touchstart", (e) => {
+      const t = e.touches[0];
+      timer = setTimeout(() => { row.dataset.longPress = "1"; openSessionMenu(row, { clientX: t.clientX, clientY: t.clientY }); }, 500);
+    }, { passive: true });
+    for (const ev of ["touchend", "touchmove", "touchcancel"]) row.addEventListener(ev, () => clearTimeout(timer), { passive: true });
+    row.addEventListener("click", (e) => { if (row.dataset.longPress) { e.stopImmediatePropagation(); delete row.dataset.longPress; } }, true);
+  });
+}
+
+// Контекстное меню сессии: правая кнопка мыши, долгое нажатие или клавиша меню / Shift+F10.
+const sessionMenu = document.createElement("div");
+sessionMenu.className = "ctx-menu";
+sessionMenu.setAttribute("role", "menu");
+sessionMenu.hidden = true;
+sessionMenu.innerHTML = `<button role="menuitem" class="danger" data-action="delete">Удалить диалог</button>`;
+document.body.appendChild(sessionMenu);
+
+function openSessionMenu(row, e) {
+  sessionMenu.dataset.id = row.dataset.id;
+  sessionMenu.hidden = false;
+  const r = row.getBoundingClientRect();
+  // С клавиатуры координат нет (0, 0) — ставим меню под строкой.
+  const x = e.clientX || r.left + 16, y = e.clientY || r.bottom;
+  const { width, height } = sessionMenu.getBoundingClientRect();
+  sessionMenu.style.left = `${Math.min(x, innerWidth - width - 8)}px`;
+  sessionMenu.style.top = `${Math.min(y, innerHeight - height - 8)}px`;
+  sessionMenu.querySelector("button").focus();
+}
+function closeSessionMenu() {
+  if (sessionMenu.hidden) return;
+  sessionMenu.hidden = true;
+  document.querySelector(`.srow[data-id="${CSS.escape(sessionMenu.dataset.id)}"]`)?.focus({ preventScroll: true });
+}
+sessionMenu.addEventListener("click", (e) => {
+  const action = e.target.closest("button")?.dataset.action;
+  const id = sessionMenu.dataset.id;
+  sessionMenu.hidden = true;
+  if (action === "delete") deleteChatSession(id);
 });
+document.addEventListener("pointerdown", (e) => { if (!sessionMenu.contains(e.target)) closeSessionMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSessionMenu(); });
+addEventListener("resize", closeSessionMenu);
+document.addEventListener("scroll", closeSessionMenu, true);
+
+async function openChatSession(id) {
+  if ($("#chat-send").disabled) return;  // идёт ответ — не переключаемся посреди потока
+  let s;
+  try { s = await api(`/api/chat/sessions/${encodeURIComponent(id)}`); } catch (e) { banner(`Не удалось открыть диалог: ${e.message}`, true); return; }
+  state.conversationId = s.id;
+  // Возвращаем выборку, с которой задан последний вопрос, — продолжение пойдёт по тем же данным.
+  state.chatScope = { sport: s.sports.length ? sportName(s.sports[0]) : "", days: s.days || null };
+  saveChatScope();
+  renderChatScope();
+  $("#chat-log").innerHTML = "";
+  let lastQuestion;
+  for (const m of s.messages) {
+    if (m.role === "user") lastQuestion = addMsg("user", m.text);
+    else renderMarkdown(addMsg("ai"), m.text);
+  }
+  lastQuestion?.scrollIntoView({ block: "start" });
+  renderChatSessions();
+  if (matchMedia("(max-width: 980px)").matches) setHistoryVisible(false);
+}
+
+async function deleteChatSession(id) {
+  try { await api(`/api/chat/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }); } catch (e) { banner(`Не удалось удалить: ${e.message}`, true); return; }
+  if (id === state.conversationId && !$("#chat-send").disabled) newChat();
+  await loadChatSessions();
+}
+
+function setHistoryVisible(on) {
+  $("#chat-layout").classList.toggle("no-history", !on);
+  $("#chat-history-toggle").setAttribute("aria-expanded", String(on));
+  try { localStorage.setItem("chatHistory", on ? "1" : "0"); } catch {}
+}
+$("#chat-history-toggle").addEventListener("click", () => setHistoryVisible($("#chat-layout").classList.contains("no-history")));
+(function initHistory() {
+  let saved = null;
+  try { saved = localStorage.getItem("chatHistory"); } catch {}
+  // На узком экране список по умолчанию свёрнут, чтобы не отнимать место у чата.
+  setHistoryVisible(saved ? saved === "1" : !matchMedia("(max-width: 980px)").matches);
+})();
+
+// --- план тренировок ---------------------------------------------------------
+
+const PLAN_SPORTS = ["RUNNING", "TREADMILL_RUNNING", "CYCLING", "INDOOR_CYCLING", "STRENGTH_TRAINING", "SWIMMING", "WALKING", "HIKING", "YOGA", "OTHER"];
+const JSON_HEADERS = { "Content-Type": "application/json" };
+// Даты плана — день без времени, в местном часовом поясе.
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const dayDate = (s) => new Date(`${s}T00:00`);
+const dayLabel = (s) => dayDate(s).toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "short" });
+function weekStart(s) {
+  const d = dayDate(s);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return isoDay(d);
+}
+
+state.planned = [];
+state.proposal = null;
+state.editing = null;
+
+function planSports() {
+  // Свои виды спорта из истории — после стандартных, если их русское название ещё не встречалось.
+  const names = new Set(PLAN_SPORTS.map(sportName));
+  const own = [];
+  for (const s of state.workouts.map((w) => w.sport)) {
+    if (s && !names.has(sportName(s))) { names.add(sportName(s)); own.push(s); }
+  }
+  return [...PLAN_SPORTS, ...own];
+}
+function sportOptions(selected) {
+  const list = planSports();
+  if (selected && !list.includes(selected)) list.push(selected);
+  return list.map((s) => `<option value="${esc(s)}"${s === selected ? " selected" : ""}>${esc(sportName(s))}</option>`).join("");
+}
+function renderPlanAiSports() {
+  const sel = $("#plan-sport"), cur = sel.value;
+  sel.innerHTML = `<option value="">На выбор AI</option>` + sportOptions();
+  sel.value = cur;
+}
+
+async function loadPlanned() {
+  try { state.planned = await api("/api/planned"); } catch (e) { banner(`Не удалось загрузить план: ${e.message}`, true); return; }
+  renderPlan();
+}
+
+function targetHtml(p) {
+  const parts = [];
+  if (p.zone) parts.push(`<span class="ztag"><i style="background:var(--z${p.zone})"></i>Z${p.zone}</span>`);
+  if (p.hr_low || p.hr_high) parts.push(HEART_ICON + [p.hr_low, p.hr_high].filter(Boolean).join("–"));
+  if (p.pace) parts.push(`${esc(p.pace)}/км`);
+  return parts.join(" · ");
+}
+
+function planRowHtml(p, proposalIndex) {
+  const proposal = proposalIndex !== undefined;
+  const meta = [dayLabel(p.date), p.duration_min ? fmtDur(p.duration_min * 60) : "", p.distance_km ? `${p.distance_km} км` : ""].filter(Boolean).join(" · ");
+  const check = proposal
+    ? `<input type="checkbox" class="pcheck" data-index="${proposalIndex}" checked aria-label="Сохранить в план">`
+    : `<input type="checkbox" class="pcheck"${p.done ? " checked" : ""} aria-label="Выполнено" title="Выполнено">`;
+  return `<div class="prow${p.done ? " done" : ""}"${proposal ? "" : ` data-id="${p.id}" tabindex="0" role="button"`}>
+    ${check}
+    <div class="pmain">
+      <div class="ptitle">${esc(sportName(p.sport))}${p.title ? ` · ${esc(p.title)}` : ""}</div>
+      <div class="psub">${meta}</div>
+      ${p.notes ? `<div class="pnotes">${esc(p.notes)}</div>` : ""}
+    </div>
+    <div class="ptarget">${targetHtml(p)}</div>
+  </div>`;
+}
+
+// Строки, сгруппированные по неделям (с понедельника), с суммарным временем недели.
+function byWeekHtml(items, rowFn) {
+  const mins = {};
+  for (const p of items) mins[weekStart(p.date)] = (mins[weekStart(p.date)] || 0) + (p.duration_min || 0);
+  let html = "", week = null;
+  items.forEach((p, i) => {
+    const w = weekStart(p.date);
+    if (w !== week) {
+      week = w;
+      const end = dayDate(w); end.setDate(end.getDate() + 6);
+      html += `<div class="pweek"><span>${fmtDate(dayDate(w))} – ${fmtDate(end)}</span><span>${mins[w] ? fmtDur(mins[w] * 60) : ""}</span></div>`;
+    }
+    html += rowFn(p, i);
+  });
+  return html;
+}
+
+function renderPlan() {
+  const today = isoDay(new Date());
+  const items = state.planned.filter((p) => $("#plan-show-past").checked || p.date >= today);
+  const box = $("#plan-list");
+  box.innerHTML = items.length ? byWeekHtml(items, (p) => planRowHtml(p))
+    : `<p class="empty">${state.planned.length ? "Ближайших тренировок в плане нет." : "Добавьте тренировку или попросите AI составить план под цель."}</p>`;
+  box.querySelectorAll(".prow").forEach((row) => {
+    const p = state.planned.find((x) => x.id === Number(row.dataset.id));
+    row.addEventListener("click", (e) => { if (!e.target.closest(".pcheck")) openPlanDialog(p); });
+    row.addEventListener("keydown", (e) => { if (e.target === row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPlanDialog(p); } });
+    row.querySelector(".pcheck").addEventListener("change", (e) => savePlanned({ ...p, done: e.target.checked }, p.id));
+  });
+}
+$("#plan-show-past").addEventListener("change", renderPlan);
+
+async function savePlanned(data, id) {
+  try {
+    await api(id ? `/api/planned/${id}` : "/api/planned", { method: id ? "PUT" : "POST", headers: JSON_HEADERS, body: JSON.stringify(data) });
+  } catch (e) { banner(`Не удалось сохранить: ${e.message}`, true); return false; }
+  await loadPlanned();
+  return true;
+}
+
+// --- форма тренировки
+
+const PF = { date: "#pf-date", sport: "#pf-sport", title: "#pf-title", duration_min: "#pf-duration", distance_km: "#pf-distance",
+  zone: "#pf-zone", pace: "#pf-pace", hr_low: "#pf-hr-low", hr_high: "#pf-hr-high", notes: "#pf-notes" };
+
+function openPlanDialog(p = null) {
+  state.editing = p;
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  $("#pf-sport").innerHTML = sportOptions(p?.sport || state.planned.at(-1)?.sport || "RUNNING");
+  for (const [k, sel] of Object.entries(PF)) if (k !== "sport") $(sel).value = p?.[k] ?? "";
+  if (!p) $("#pf-date").value = isoDay(tomorrow);
+  $("#pf-done").checked = !!p?.done;
+  $("#plan-dialog-title").textContent = p ? "Тренировка в плане" : "Новая тренировка";
+  $("#pf-delete").classList.toggle("hidden", !p);
+  $("#plan-dialog").showModal();
+}
+$("#plan-add").addEventListener("click", () => openPlanDialog());
+$("#pf-cancel").addEventListener("click", () => $("#plan-dialog").close());
+
+// Выбрали зону — подставляем её пульс по HRmax, если диапазон ещё не задан.
+$("#pf-zone").addEventListener("change", (e) => {
+  const z = Number(e.target.value), max = state.status.hr_max;
+  if (!z || !max || $("#pf-hr-low").value || $("#pf-hr-high").value) return;
+  $("#pf-hr-low").value = Math.round(max * (0.4 + z / 10));
+  $("#pf-hr-high").value = Math.round(max * (0.5 + z / 10));
+});
+
+$("#plan-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const data = { goal: state.editing?.goal ?? null, done: $("#pf-done").checked };
+  for (const [k, sel] of Object.entries(PF)) {
+    const v = $(sel).value.trim();
+    data[k] = v === "" ? null : $(sel).type === "number" || k === "zone" ? Number(v) : v;
+  }
+  if (await savePlanned(data, state.editing?.id)) $("#plan-dialog").close();
+});
+
+$("#pf-delete").addEventListener("click", async () => {
+  const p = state.editing;
+  if (!p || !confirm("Удалить тренировку из плана?")) return;
+  try { await api(`/api/planned/${p.id}`, { method: "DELETE" }); } catch (e) { banner(`Не удалось удалить: ${e.message}`, true); return; }
+  $("#plan-dialog").close();
+  await loadPlanned();
+});
+
+// --- план от AI
+
+function setPlanAi(on) {
+  $("#plan-ai").classList.toggle("hidden", !on);
+  $("#plan-ai-toggle").setAttribute("aria-expanded", String(on));
+  if (on && !$("#plan-goal").value) $("#plan-goal").focus();
+}
+$("#plan-ai-toggle").addEventListener("click", () => setPlanAi($("#plan-ai").classList.contains("hidden")));
+document.querySelectorAll("#plan-goal-presets button").forEach((b) => b.addEventListener("click", () => {
+  $("#plan-goal").value = b.textContent;
+  $("#plan-goal").focus();
+}));
+
+$("#plan-ai-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const goal = $("#plan-goal").value.trim();
+  if (goal.length < 3) { $("#plan-goal").focus(); return; }
+  const btn = $("#plan-generate");
+  btn.disabled = true;
+  btn.textContent = "Составляю…";
+  $("#plan-proposal").innerHTML = `<p class="muted proposal-wait">AI изучает историю и составляет план, это может занять до минуты…</p>`;
+  try {
+    const r = await api("/api/planned/generate", {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({
+        goal, start: $("#plan-start").value, weeks: Number($("#plan-weeks").value),
+        per_week: Number($("#plan-per-week").value), sports: $("#plan-sport").value ? [$("#plan-sport").value] : [],
+      }),
+    });
+    state.proposal = { ...r, goal };
+    renderProposal();
+  } catch (err) {
+    $("#plan-proposal").innerHTML = `<div class="error-box proposal-wait">${esc(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = state.proposal ? "Составить заново" : "Составить план";
+  }
+});
+
+function renderProposal() {
+  const pr = state.proposal, box = $("#plan-proposal");
+  $("#plan-generate").classList.toggle("secondary", !!pr);
+  if (!pr) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="proposal">
+    ${pr.summary ? `<div class="proposal-summary">${DOMPurify.sanitize(marked.parse(pr.summary))}</div>` : ""}
+    <div class="proposal-list">${byWeekHtml(pr.workouts, (p, i) => planRowHtml(p, i))}</div>
+    <div class="row">
+      <button class="btn" id="proposal-save"></button>
+      <button class="btn secondary" id="proposal-cancel">Отменить</button>
+    </div>
+  </div>`;
+  const checks = [...box.querySelectorAll(".pcheck")];
+  const count = () => {
+    const n = checks.filter((c) => c.checked).length;
+    $("#proposal-save").textContent = `Сохранить ${n} ${plural(n, "тренировку", "тренировки", "тренировок")}`;
+    $("#proposal-save").disabled = !n;
+  };
+  checks.forEach((c) => c.addEventListener("change", count));
+  count();
+  $("#proposal-cancel").addEventListener("click", () => { state.proposal = null; renderProposal(); $("#plan-generate").textContent = "Составить план"; });
+  $("#proposal-save").addEventListener("click", async (e) => {
+    const items = checks.filter((c) => c.checked).map((c) => ({ ...pr.workouts[Number(c.dataset.index)], goal: pr.goal }));
+    e.target.disabled = true;
+    try {
+      await api("/api/planned/bulk", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(items) });
+    } catch (err) { banner(`Не удалось сохранить план: ${err.message}`, true); e.target.disabled = false; return; }
+    state.proposal = null;
+    renderProposal();
+    $("#plan-generate").textContent = "Составить план";
+    setPlanAi(false);
+    banner(`В план добавлено: ${items.length} ${plural(items.length, "тренировка", "тренировки", "тренировок")}.`);
+    await loadPlanned();
+  });
+}
+
+(function initPlan() {
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  $("#plan-start").value = isoDay(tomorrow);
+  renderPlanAiSports();
+  loadPlanned();
+})();
 
 // --- настройки ---------------------------------------------------------------
 
@@ -461,6 +812,7 @@ $("#demo-del").addEventListener("click", async () => {
   try { view = params.has("polar") ? view : localStorage.getItem("view") || view; } catch {}
   show(view);
   loadAll().catch((e) => banner(`Ошибка загрузки: ${e.message}`, true));
+  loadChatSessions();
   // Смена системной темы: перерисовать графики с новыми цветами токенов.
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     renderOverview();

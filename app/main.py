@@ -1,6 +1,6 @@
 """Веб-сервер: API для интерфейса, OAuth Polar, чат с AI."""
 import secrets
-from datetime import datetime, timedelta
+from datetime import date as Date, datetime, timedelta
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
@@ -72,6 +72,68 @@ def update_settings(s: Settings):
     db.set_setting("hr_max", s.hr_max)
     db.recompute_zones()
     return {"ok": True}
+
+
+# --- план тренировок ----------------------------------------------------------
+
+class PlannedWorkout(BaseModel):
+    date: Date
+    sport: str = Field(min_length=1, max_length=40)
+    title: str | None = Field(default=None, max_length=120)
+    duration_min: int | None = Field(default=None, ge=1, le=1440)
+    distance_km: float | None = Field(default=None, gt=0, le=1000)
+    zone: int | None = Field(default=None, ge=1, le=5)
+    hr_low: int | None = Field(default=None, ge=40, le=230)
+    hr_high: int | None = Field(default=None, ge=40, le=230)
+    pace: str | None = Field(default=None, max_length=20)
+    notes: str | None = Field(default=None, max_length=2000)
+    goal: str | None = Field(default=None, max_length=300)
+    done: bool = False
+
+
+@app.get("/api/planned")
+def planned():
+    return db.list_planned()
+
+
+@app.post("/api/planned")
+def planned_add(p: PlannedWorkout):
+    return db.get_planned(db.add_planned([p.model_dump(mode="json")])[0])
+
+
+@app.post("/api/planned/bulk")
+def planned_add_many(items: list[PlannedWorkout]):
+    if len(items) > 200:
+        raise HTTPException(400, "Слишком много тренировок за раз")
+    return {"ids": db.add_planned([p.model_dump(mode="json") for p in items])}
+
+
+@app.put("/api/planned/{pid}")
+def planned_update(pid: int, p: PlannedWorkout):
+    if not db.update_planned(pid, p.model_dump(mode="json")):
+        raise HTTPException(404, "Тренировка не найдена")
+    return db.get_planned(pid)
+
+
+@app.delete("/api/planned/{pid}")
+def planned_delete(pid: int):
+    return {"deleted": db.delete_planned(pid)}
+
+
+class PlanRequest(BaseModel):
+    goal: str = Field(min_length=3, max_length=300)
+    start: Date
+    weeks: int = Field(ge=1, le=16)
+    per_week: int = Field(ge=1, le=14)
+    sports: list[str] = Field(default=[], max_length=10)
+
+
+@app.post("/api/planned/generate")
+def planned_generate(req: PlanRequest):
+    try:
+        return ai.generate_plan(req.goal, req.start, req.weeks, req.per_week, req.sports)
+    except ai.AIError as e:
+        raise HTTPException(502, str(e))
 
 
 # --- Polar -------------------------------------------------------------------
@@ -153,10 +215,38 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 def chat(req: ChatRequest):
-    return StreamingResponse(
-        ai.chat_stream(req.conversation_id, req.message, req.sports, req.days),
-        media_type="text/plain; charset=utf-8",
-    )
+    def stream():
+        parts = []
+        try:
+            for chunk in ai.chat_stream(req.conversation_id, req.message, req.sports, req.days):
+                parts.append(chunk)
+                yield chunk
+        finally:
+            # Ошибки («⚠️ …») не сохраняем: ai.py и так убирает такой ход из истории диалога.
+            answer = "".join(parts).strip()
+            if answer and not answer.startswith("⚠️"):
+                db.save_chat_turn(req.conversation_id, req.message, answer, req.sports, req.days)
+
+    return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/api/chat/sessions")
+def chat_sessions():
+    return db.list_chat_sessions()
+
+
+@app.get("/api/chat/sessions/{session_id}")
+def chat_session(session_id: str):
+    s = db.get_chat_session(session_id)
+    if not s:
+        raise HTTPException(404, "Сессия не найдена")
+    return s
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+def chat_session_delete(session_id: str):
+    ai.reset(session_id)
+    return {"hidden": db.hide_chat_session(session_id)}
 
 
 @app.delete("/api/chat/{conversation_id}")

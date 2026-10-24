@@ -175,13 +175,13 @@ main { flex: 1; min-width: 0; max-width: 1200px; padding: 40px 24px 56px; margin
 
 /* --- поля ввода ------------------------------------------------------------- */
 
-input[type=number], select, textarea {
+input[type=number], input[type=text], input[type=date], select, textarea {
   font: inherit; font-size: 14px; color: var(--text); background: var(--surface);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   height: 40px; padding: 0 12px;
 }
-input[type=number]:hover, select:hover, textarea:hover { border-color: var(--border-strong); }
-input[type=number]:focus, select:focus, textarea:focus {
+input[type=number]:hover, input[type=text]:hover, input[type=date]:hover, select:hover, textarea:hover { border-color: var(--border-strong); }
+input[type=number]:focus, input[type=text]:focus, input[type=date]:focus, select:focus, textarea:focus {
   outline: none; border-color: var(--text-subtle); box-shadow: 0 0 0 3px var(--focus);
 }
 select {
@@ -292,6 +292,99 @@ input[type=file]:focus-visible::file-selector-button { box-shadow: 0 0 0 3px var
 .chat-form textarea { flex: 1; min-width: 0; resize: none; max-height: 160px; }
 .chat-form textarea::placeholder { color: var(--text-subtle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* --- история диалогов ------------------------------------------------------ */
+
+.chat-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; align-items: start; }
+.chat-layout > * { min-width: 0; }
+.chat-layout.no-history { grid-template-columns: 1fr; }
+.chat-layout.no-history .chat-history { display: none; }
+.chat-history { max-height: calc(100vh - 180px); }
+.srow {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.srow:hover { background: var(--surface-muted); }
+.srow.active { background: var(--surface-muted); box-shadow: inset 2px 0 0 var(--primary); }
+.srow:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--focus); }
+.srow .title { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow .sub { grid-column: 1; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+#chat-history-toggle[aria-expanded="true"] { background: var(--surface-muted); border-color: var(--border-strong); }
+.srow { -webkit-touch-callout: none; user-select: none; }
+.ctx-menu {
+  position: fixed; z-index: 100; min-width: 180px; padding: 4px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-pop);
+}
+.ctx-menu button {
+  display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--text);
+  font: inherit; font-size: 14px; padding: 8px 12px; border-radius: 6px; cursor: pointer;
+}
+.ctx-menu button.danger { color: var(--negative); }
+.ctx-menu button:hover, .ctx-menu button:focus-visible { outline: none; background: var(--danger-bg); }
+
+/* --- план тренировок -------------------------------------------------------- */
+
+.plan-list { max-height: none; }
+.pweek {
+  display: flex; justify-content: space-between; gap: 12px; padding: 8px 16px;
+  font-size: 12px; font-weight: 600; color: var(--text-muted); font-variant-numeric: tabular-nums;
+  background: var(--surface-muted); border-bottom: 1px solid var(--border);
+}
+.prow {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+}
+.prow:last-child { border-bottom: 0; }
+#plan-list .prow { cursor: pointer; }
+#plan-list .prow:hover { background: var(--surface-muted); }
+#plan-list .prow:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--focus); }
+.pcheck { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--primary); cursor: pointer; }
+.pmain { min-width: 0; }
+.ptitle { font-weight: 550; overflow-wrap: anywhere; }
+.psub { font-size: 13px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.pnotes { font-size: 13px; color: var(--text-muted); margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#plan-list .pnotes { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.prow.done .ptitle { color: var(--text-subtle); text-decoration: line-through; }
+.ptarget { font-size: 13px; font-weight: 500; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ptarget svg { width: 12px; height: 12px; vertical-align: -1px; margin-right: 3px; color: var(--text-subtle); }
+.ztag i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--primary); }
+#view-plan > label.check { align-self: flex-start; }
+
+.plan-form { display: flex; flex-direction: column; gap: 16px; }
+.plan-form > p { margin: 0; }
+.form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.form-grid.cols4 { grid-template-columns: repeat(4, 1fr); }
+.form-grid .wide { grid-column: 1 / -1; }
+.form-grid input:not([type=checkbox]), .form-grid select, .form-grid textarea, .plan-form textarea { width: 100%; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chips button {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  border-radius: 999px; height: 32px; padding: 0 12px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.chips button:hover { border-color: var(--border-strong); background: var(--surface-muted); }
+.chips button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+#plan-ai-toggle[aria-expanded="true"] { background: var(--surface-muted); border-color: var(--border-strong); }
+
+.proposal-wait { margin: 20px 0 0; }
+.proposal { display: flex; flex-direction: column; gap: 16px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border); }
+.proposal-summary { background: var(--surface-muted); border-radius: var(--radius-sm); padding: 12px 14px; }
+.proposal-summary p:first-child { margin-top: 0; }
+.proposal-summary p:last-child { margin-bottom: 0; }
+.proposal-list { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+
+.dialog {
+  width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-pop);
+}
+.dialog::backdrop { background: rgba(0, 0, 0, .4); }
+.dialog form { padding: 20px; }
+.dialog h2 { margin: 0; }
+.dialog-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.dialog-actions .danger { margin-right: auto; }
+.dialog-actions .danger.hidden + .btn { margin-left: auto; }
+
 /* --- планшет: до 980px ------------------------------------------------------ */
 
 @media (max-width: 980px) {
@@ -305,7 +398,8 @@ input[type=file]:focus-visible::file-selector-button { box-shadow: 0 0 0 3px var
   nav::-webkit-scrollbar { display: none; }
   .sidebar-foot { display: none; }
   main { width: 100%; }
-  .grid2, .split { grid-template-columns: 1fr; }
+  .grid2, .split, .chat-layout { grid-template-columns: 1fr; }
+  .chat-history { max-height: 40vh; }
   .detail-card { position: static; scroll-margin-top: 112px; }
   .list-card { max-height: 50vh; }
 }
@@ -350,9 +444,11 @@ input[type=file]:focus-visible::file-selector-button { box-shadow: 0 0 0 3px var
   #hrmax-form label.field, #hrmax-form input[type=number] { width: 100%; }
 
   /* 16px в полях — iOS не зумит страницу при фокусе. */
-  input[type=number], select, textarea { font-size: 16px; }
+  input[type=number], input[type=text], input[type=date], select, textarea { font-size: 16px; }
 
   .chat-card { height: calc(100dvh - 200px); min-height: 360px; }
+  #view-chat .view-head .row { width: 100%; flex-wrap: nowrap; }
+  #view-chat .view-head .row > .btn { flex: 1 1 0; }
   .chat-scope select, .chat-scope .seg { width: 100%; }
   .chat-scope .seg button { flex: 1; height: 36px; padding: 0 6px; }
   .chat-scope-count { margin-left: 0; }
@@ -361,4 +457,12 @@ input[type=file]:focus-visible::file-selector-button { box-shadow: 0 0 0 3px var
   .suggestions { grid-template-columns: 1fr; }
   .suggestions button { font-size: 14px; }
   .chat-form .btn { flex: 0 0 auto; }
+
+  #view-plan .view-head .row { width: 100%; flex-wrap: nowrap; }
+  #view-plan .view-head .row > .btn { flex: 1 1 0; }
+  .form-grid.cols4 { grid-template-columns: 1fr 1fr; }
+  .prow { grid-template-columns: auto 1fr; }
+  .ptarget { grid-column: 2; text-align: left; }
+  .dialog form { padding: 16px; }
+  .dialog-actions .btn { flex: 1 1 0; }
 }

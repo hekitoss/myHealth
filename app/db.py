@@ -2,6 +2,7 @@
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 
 from . import metrics
 from .config import DB_PATH, DEFAULT_HR_MAX
@@ -36,6 +37,45 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id          TEXT PRIMARY KEY,         -- conversation_id из интерфейса
+    title       TEXT NOT NULL,            -- начало первого вопроса
+    sports_json TEXT,                     -- выборка последнего вопроса: виды спорта
+    days        INTEGER,                  --   и период, дней (NULL — всё время)
+    hidden      INTEGER NOT NULL DEFAULT 0, -- 1 — удалена из интерфейса, но хранится в базе
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL,             -- user | ai
+    text       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
+
+CREATE TABLE IF NOT EXISTS planned_workouts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    date         TEXT NOT NULL,           -- YYYY-MM-DD
+    sport        TEXT NOT NULL,           -- код вида спорта, как в workouts (RUNNING, CYCLING…)
+    title        TEXT,
+    duration_min INTEGER,
+    distance_km  REAL,
+    zone         INTEGER,                 -- целевая пульсовая зона 1..5
+    hr_low       INTEGER,                 -- целевой пульс, уд/мин
+    hr_high      INTEGER,
+    pace         TEXT,                    -- целевой темп, мм:сс на км
+    notes        TEXT,
+    goal         TEXT,                    -- цель плана, если тренировку предложил AI
+    done         INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_planned_date ON planned_workouts(date);
 """
 
 
@@ -67,6 +107,9 @@ def session():
 def init():
     with session() as c:
         c.executescript(SCHEMA)
+        # База, созданная до появления мягкого удаления сессий чата.
+        if "hidden" not in {r["name"] for r in c.execute("PRAGMA table_info(chat_sessions)")}:
+            c.execute("ALTER TABLE chat_sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
 
 
 # --- настройки ---------------------------------------------------------------
@@ -200,3 +243,117 @@ def recompute_zones():
 def count_workouts():
     with session() as c:
         return c.execute("SELECT COUNT(*) FROM workouts").fetchone()[0]
+
+
+# --- сессии чата с AI --------------------------------------------------------
+
+def save_chat_turn(session_id, question, answer, sports=None, days=None):
+    """Дописывает вопрос и ответ в сессию; первая пара создаёт сессию."""
+    now = datetime.now().isoformat(timespec="seconds")
+    title = " ".join(question.split())
+    title = title if len(title) <= 80 else title[:79].rstrip() + "…"
+    with session() as c:
+        c.execute(
+            "INSERT INTO chat_sessions(id, title, sports_json, days, created_at, updated_at) "
+            "VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+            "sports_json = excluded.sports_json, days = excluded.days, updated_at = excluded.updated_at",
+            (session_id, title, json.dumps(sports or []), days, now, now),
+        )
+        c.executemany(
+            "INSERT INTO chat_messages(session_id, role, text, created_at) VALUES(?, ?, ?, ?)",
+            [(session_id, "user", question, now), (session_id, "ai", answer, now)],
+        )
+
+
+def list_chat_sessions():
+    with session() as c:
+        rows = c.execute(
+            "SELECT s.*, (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id AND m.role = 'user') "
+            "AS questions FROM chat_sessions s WHERE s.hidden = 0 ORDER BY s.updated_at DESC"
+        ).fetchall()
+    return [_chat_session_dict(r) for r in rows]
+
+
+def get_chat_session(session_id):
+    with session() as c:
+        row = c.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
+        if not row:
+            return None
+        msgs = c.execute(
+            "SELECT role, text, created_at FROM chat_messages WHERE session_id = ? ORDER BY id", (session_id,)
+        ).fetchall()
+    s = _chat_session_dict(row)
+    s["messages"] = [dict(m) for m in msgs]
+    return s
+
+
+def hide_chat_session(session_id):
+    """Мягкое удаление: сессия остаётся в базе, но не показывается в списке."""
+    with session() as c:
+        return c.execute("UPDATE chat_sessions SET hidden = 1 WHERE id = ?", (session_id,)).rowcount
+
+
+def _chat_session_dict(row):
+    d = dict(row)
+    d["sports"] = json.loads(d.pop("sports_json") or "[]")
+    return d
+
+
+# --- планируемые тренировки --------------------------------------------------
+# Входят в контекст AI, поэтому каждое изменение сбрасывает его кэш (_touch).
+
+PLANNED_FIELDS = ("date", "sport", "title", "duration_min", "distance_km", "zone",
+                  "hr_low", "hr_high", "pace", "notes", "goal", "done")
+
+
+def list_planned(since=None):
+    q, args = "SELECT * FROM planned_workouts", ()
+    if since:
+        q, args = q + " WHERE date >= ?", (since,)
+    with session() as c:
+        rows = c.execute(q + " ORDER BY date, id", args).fetchall()
+    return [_planned_dict(r) for r in rows]
+
+
+def get_planned(pid):
+    with session() as c:
+        row = c.execute("SELECT * FROM planned_workouts WHERE id = ?", (pid,)).fetchone()
+    return _planned_dict(row) if row else None
+
+
+def add_planned(items):
+    now = datetime.now().isoformat(timespec="seconds")
+    cols = ", ".join(PLANNED_FIELDS)
+    vals = ", ".join(f":{k}" for k in PLANNED_FIELDS)
+    with session() as c:
+        ids = [
+            c.execute(f"INSERT INTO planned_workouts({cols}, created_at, updated_at) VALUES({vals}, :now, :now)",
+                      {**{k: it.get(k) for k in PLANNED_FIELDS}, "now": now}).lastrowid
+            for it in items
+        ]
+    _touch()
+    return ids
+
+
+def update_planned(pid, item):
+    sets = ", ".join(f"{k} = :{k}" for k in PLANNED_FIELDS)
+    with session() as c:
+        n = c.execute(f"UPDATE planned_workouts SET {sets}, updated_at = :now WHERE id = :id", {
+            **{k: item.get(k) for k in PLANNED_FIELDS},
+            "now": datetime.now().isoformat(timespec="seconds"), "id": pid,
+        }).rowcount
+    _touch()
+    return n
+
+
+def delete_planned(pid):
+    with session() as c:
+        n = c.execute("DELETE FROM planned_workouts WHERE id = ?", (pid,)).rowcount
+    _touch()
+    return n
+
+
+def _planned_dict(row):
+    d = dict(row)
+    d["done"] = bool(d["done"])
+    return d
