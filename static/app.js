@@ -584,7 +584,38 @@ function byWeekHtml(items, rowFn) {
   return html;
 }
 
+// Карточка на «Обзоре»: ближайшая невыполненная тренировка из плана.
+function renderNextPlanned() {
+  const today = isoDay(new Date());
+  const p = state.planned.find((x) => x.date >= today && !x.done);
+  const box = $("#next-plan");
+  if (!p) {
+    box.innerHTML = `<div class="next-head"><h2>Следующая тренировка</h2></div>
+      <p class="muted">В плане пока ничего нет.</p>
+      <div class="row"><button class="btn secondary" id="next-go">Запланировать</button></div>`;
+    $("#next-go").addEventListener("click", () => show("plan"));
+    return;
+  }
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  const when = p.date === today ? "Сегодня" : p.date === isoDay(tomorrow) ? "Завтра" : dayLabel(p.date);
+  const meta = [p.duration_min ? fmtDur(p.duration_min * 60) : "", p.distance_km ? `${p.distance_km} км` : ""].filter(Boolean).join(" · ");
+  const target = targetHtml(p);
+  box.innerHTML = `<div class="next-head"><h2>Следующая тренировка</h2><span class="next-when">${when}</span></div>
+    <div class="next-title">${esc(sportName(p.sport))}${p.title ? ` · ${esc(p.title)}` : ""}</div>
+    ${meta || target ? `<div class="next-meta">${[meta, target].filter(Boolean).join(" · ")}</div>` : ""}
+    ${p.notes ? `<p class="next-notes">${esc(p.notes)}</p>` : ""}
+    <div class="row">
+      <button class="btn secondary" id="next-done">Выполнено</button>
+      <button class="btn secondary" id="next-open">Подробнее</button>
+      <button class="btn secondary" id="next-all">Весь план</button>
+    </div>`;
+  $("#next-done").addEventListener("click", (e) => { e.target.disabled = true; savePlanned({ ...p, done: true }, p.id); });
+  $("#next-open").addEventListener("click", () => openPlanDialog(p));
+  $("#next-all").addEventListener("click", () => show("plan"));
+}
+
 function renderPlan() {
+  renderNextPlanned();
   const today = isoDay(new Date());
   const items = state.planned.filter((p) => $("#plan-show-past").checked || p.date >= today);
   const box = $("#plan-list");

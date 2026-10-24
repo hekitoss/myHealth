@@ -385,6 +385,19 @@ label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--pr
 .dialog-actions .danger { margin-right: auto; }
 .dialog-actions .danger.hidden + .btn { margin-left: auto; }
 
+.next-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.next-head h2 { margin: 0; }
+.next-when { font-size: 13px; font-weight: 550; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.next-title { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.next-meta { margin-top: 4px; font-size: 14px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.next-meta svg { width: 12px; height: 12px; vertical-align: -1px; margin-right: 3px; color: var(--text-subtle); }
+.next-notes {
+  margin: 8px 0 0; font-size: 14px; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.next-plan .row { margin-top: 16px; }
+.next-plan > p.muted { margin: 0; }
+
 /* --- планшет: до 980px ------------------------------------------------------ */
 
 @media (max-width: 980px) {
