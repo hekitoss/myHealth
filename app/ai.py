@@ -216,10 +216,16 @@ def reset(conversation_id):
     _conversations.pop(conversation_id, None)
 
 
+# Метка ошибки в потоке ответа: после неё идёт короткий текст ошибки, и поток заканчивается.
+# Интерфейс по ней показывает строку с кнопкой «Повторить», а сервер не сохраняет такой ход.
+ERROR_MARK = "\x1e"
+
+
 def chat_stream(conversation_id, user_message, sports=None, days=None):
     """Генератор кусков текста ответа. Историю диалога держим в памяти процесса.
 
     sports/days задают выборку тренировок для контекста (None — все виды / всё время).
+    При ошибке последним куском идёт ERROR_MARK + текст, а вопрос убирается из истории.
     """
     if conversation_id not in _conversations and len(_conversations) >= MAX_CONVERSATIONS:
         _conversations.pop(next(iter(_conversations)))
@@ -231,8 +237,7 @@ def chat_stream(conversation_id, user_message, sports=None, days=None):
 
     if not is_configured():
         contents.pop()
-        yield ("⚠️ Не найден ключ Gemini API. Получите бесплатный ключ на https://aistudio.google.com/apikey, "
-               "добавьте GEMINI_API_KEY в файл .env и перезапустите приложение.")
+        yield ERROR_MARK + "Не задан ключ Gemini API: добавьте GEMINI_API_KEY в .env и перезапустите сервер."
         return
 
     client = genai.Client(api_key=GEMINI_API_KEY)
@@ -276,7 +281,8 @@ def chat_stream(conversation_id, user_message, sports=None, days=None):
                 return
             if not calls:
                 if not any(p.text and not p.thought for p in parts):
-                    yield "_Модель вернула пустой ответ, попробуйте ещё раз._"
+                    _rollback(contents, user_turn)
+                    yield ERROR_MARK + "Модель вернула пустой ответ."
                 return
 
             results = []
@@ -289,12 +295,16 @@ def chat_stream(conversation_id, user_message, sports=None, days=None):
             contents.append(types.Content(role="user", parts=results))
             yield "\n\n"
     except (errors.APIError, httpx.TransportError) as e:
+        log.warning("Ошибка Gemini API в чате: %s", e)
         _rollback(contents, user_turn)
-        yield f"⚠️ {_error_text(e)}"
+        yield ERROR_MARK + _error_text(e)
+    except GeneratorExit:  # браузер закрыл соединение посреди ответа
+        _rollback(contents, user_turn)
+        raise
     except Exception as e:  # иначе поток молча обрывается и в чате пусто
         log.exception("Ошибка в чате с AI")
         _rollback(contents, user_turn)
-        yield f"⚠️ Внутренняя ошибка: {type(e).__name__}: {e}"
+        yield ERROR_MARK + f"Внутренняя ошибка сервера ({type(e).__name__}), подробности в окне сервера."
 
 
 def _error_text(e):
@@ -303,8 +313,11 @@ def _error_text(e):
     if e.code in (401, 403) or (e.code == 400 and "API key" in (e.message or "")):
         return "Ключ Gemini API не подошёл. Проверьте GEMINI_API_KEY в .env."
     if e.code == 429:
-        return "Исчерпан бесплатный лимит запросов к Gemini API, попробуйте через минуту (или завтра, если кончился дневной)."
-    return f"Ошибка Gemini API ({e.code}): {e.message}"
+        return "Исчерпан лимит запросов к Gemini API, попробуйте через минуту (или завтра, если кончился дневной)."
+    if e.code and e.code >= 500:
+        return f"Gemini API временно недоступен ({e.code})."
+    message = " ".join((e.message or "").split())
+    return f"Ошибка Gemini API ({e.code}): {message[:150] + '…' if len(message) > 150 else message}"
 
 
 def _rollback(contents, user_turn):

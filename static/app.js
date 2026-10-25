@@ -330,44 +330,64 @@ function renderMarkdown(el, text) {
   el.innerHTML = DOMPurify.sanitize(marked.parse(text));
 }
 
+const ERROR_MARK = "\x1e";  // как ai.ERROR_MARK на сервере: дальше в потоке идёт текст ошибки
+
 async function sendChat(text) {
   text = text.trim();
   if (!text) return;
   $("#chat-input").value = "";
   autoGrow();
   $("#chat-send").disabled = true;
-  addMsg("user", text);
+  const question = addMsg("user", text);
   const out = addMsg("ai");
   out.classList.add("pending");
-  let acc = "";
+  let acc = "", error = null;
   try {
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversation_id: state.conversationId, message: text, sports: chatScopeSports(), days: state.chatScope.days }),
     });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!r.ok) throw new Error(`Сервер ответил ${r.status}.`);
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
       acc += dec.decode(value, { stream: true });
+      const mark = acc.indexOf(ERROR_MARK);
+      if (mark >= 0) { error = acc.slice(mark + 1).trim() || "Неизвестная ошибка."; break; }
       renderMarkdown(out, acc);
       out.scrollIntoView({ block: "end" });
     }
-    if (!acc.trim()) {
-      acc = "⚠️ Сервер вернул пустой ответ. Посмотрите ошибку в окне, где запущен сервер.";
-      renderMarkdown(out, acc);
-    }
+    if (!error && !acc.trim()) error = "Сервер вернул пустой ответ.";
   } catch (e) {
-    acc += `\n\n⚠️ ${e.message}`;
-    renderMarkdown(out, acc);
+    error = e instanceof TypeError ? "Нет связи с сервером." : e.message;
   } finally {
     out.classList.remove("pending");
     $("#chat-send").disabled = false;
-    loadChatSessions();
   }
+  if (error) {
+    // Частичный ответ не показываем: сервер его не сохранил, повтор задаст вопрос заново.
+    out.remove();
+    showChatError(question, text, error);
+  }
+  loadChatSessions();
+}
+
+function showChatError(question, text, error) {
+  const el = document.createElement("div");
+  el.className = "chat-error";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `<span>Не удалось получить ответ. ${esc(error)}</span><button class="btn secondary">Повторить</button>`;
+  el.querySelector("button").addEventListener("click", () => {
+    if ($("#chat-send").disabled) return;
+    el.remove();
+    question.remove();
+    sendChat(text);
+  });
+  question.after(el);
+  el.scrollIntoView({ block: "end" });
 }
 
 $("#chat-form").addEventListener("submit", (e) => { e.preventDefault(); sendChat($("#chat-input").value); });

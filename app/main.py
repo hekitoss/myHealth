@@ -216,16 +216,16 @@ class ChatRequest(BaseModel):
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     def stream():
-        parts = []
-        try:
-            for chunk in ai.chat_stream(req.conversation_id, req.message, req.sports, req.days):
-                parts.append(chunk)
-                yield chunk
-        finally:
-            # Ошибки («⚠️ …») не сохраняем: ai.py и так убирает такой ход из истории диалога.
-            answer = "".join(parts).strip()
-            if answer and not answer.startswith("⚠️"):
-                db.save_chat_turn(req.conversation_id, req.message, answer, req.sports, req.days)
+        parts, failed = [], False
+        for chunk in ai.chat_stream(req.conversation_id, req.message, req.sports, req.days):
+            failed = failed or chunk.startswith(ai.ERROR_MARK)
+            parts.append(chunk)
+            yield chunk
+        # Сохраняем только завершённый ответ без ошибки: при ошибке или обрыве соединения
+        # ai.py убирает вопрос из истории, и в базе его тоже быть не должно.
+        answer = "".join(parts).strip()
+        if answer and not failed:
+            db.save_chat_turn(req.conversation_id, req.message, answer, req.sports, req.days)
 
     return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
 

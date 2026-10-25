@@ -280,6 +280,11 @@ input[type=file]:focus-visible::file-selector-button { box-shadow: 0 0 0 3px var
 .msg.ai th { font-size: 12px; font-weight: 500; color: var(--text-subtle); }
 .msg.ai.pending::after { content: "▍"; animation: blink 1s steps(2) infinite; color: var(--text-subtle); }
 @keyframes blink { 50% { opacity: 0; } }
+.chat-error {
+  align-self: flex-end; display: flex; align-items: center; gap: 10px; max-width: 80%;
+  font-size: 13px; color: var(--negative); text-align: right;
+}
+.chat-error .btn { height: 32px; padding: 0 12px; font-size: 13px; flex-shrink: 0; }
 .chat-empty { margin: auto; text-align: center; max-width: 560px; color: var(--text-muted); }
 .suggestions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
 .suggestions button {
@@ -466,7 +471,7 @@ label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--pr
   .chat-scope .seg button { flex: 1; height: 36px; padding: 0 6px; }
   .chat-scope-count { margin-left: 0; }
   .chat-log { padding: 16px; }
-  .msg { max-width: 92%; }
+  .msg, .chat-error { max-width: 92%; }
   .suggestions { grid-template-columns: 1fr; }
   .suggestions button { font-size: 14px; }
   .chat-form .btn { flex: 0 0 auto; }
