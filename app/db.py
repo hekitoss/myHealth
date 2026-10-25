@@ -203,14 +203,29 @@ def hr_max(user):
 # --- тренировки --------------------------------------------------------------
 
 def upsert_workout(user, w, hr=None, rate_s=1):
-    """Сохраняет тренировку (dict с полями таблицы) и пульс. Возвращает (id, is_new)."""
-    if hr:
-        stats = metrics.hr_stats(hr)
+    """Сохраняет тренировку (dict с полями таблицы) и пульс. Возвращает (id, is_new).
+
+    Если пульс не передан, а у тренировки он уже сохранён, статистика и зоны считаются
+    по сохранённому — иначе повторная синхронизация без samples стёрла бы их.
+    """
+    with session() as c:
+        existing = c.execute(
+            "SELECT id FROM workouts WHERE user_id = ? AND source = ? AND external_id = ?",
+            (user, w["source"], str(w["external_id"])),
+        ).fetchone()
+        stored = existing and c.execute(
+            "SELECT rate_s, data FROM hr_samples WHERE workout_id = ?", (existing["id"],)
+        ).fetchone()
+    calc_hr, calc_rate = hr, rate_s
+    if not hr and stored:
+        calc_hr, calc_rate = [int(v) for v in stored["data"].split(",")], stored["rate_s"]
+    if calc_hr:
+        stats = metrics.hr_stats(calc_hr)
         for k in ("avg_hr", "max_hr", "min_hr"):
             if not w.get(k):
                 w[k] = stats[k]
         if not w.get("zones"):
-            w["zones"] = metrics.zone_seconds(hr, rate_s, hr_max(user))
+            w["zones"] = metrics.zone_seconds(calc_hr, calc_rate, hr_max(user))
     fields = {
         "user_id": user,
         "source": w["source"],
@@ -227,10 +242,6 @@ def upsert_workout(user, w, hr=None, rate_s=1):
         "zones_json": json.dumps(w["zones"]) if w.get("zones") else None,
     }
     with session() as c:
-        existing = c.execute(
-            "SELECT id FROM workouts WHERE user_id = ? AND source = ? AND external_id = ?",
-            (user, fields["source"], fields["external_id"]),
-        ).fetchone()
         if existing:
             wid = existing["id"]
             sets = ", ".join(f"{k} = :{k}" for k in fields)

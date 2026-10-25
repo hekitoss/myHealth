@@ -242,6 +242,36 @@ function renderWorkoutList() {
 }
 $("#sport-filter").addEventListener("change", renderWorkoutList);
 
+// Границы зон пульса (50/60/70/80/90% HRmax, как в metrics.ZONE_BOUNDS) — пунктир с подписью.
+function zoneBounds() {
+  const max = state.status.hr_max;
+  return max ? ZONE_VARS.map((v, i) => ({ zone: i + 1, hr: Math.round(max * (0.5 + i / 10)), color: css(v) })) : [];
+}
+
+const zoneLinesPlugin = {
+  id: "zoneLines",
+  afterDatasetsDraw(chart, _args, opts) {
+    const { ctx, chartArea: area, scales: { y } } = chart;
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1;
+    ctx.font = `600 11px ${Chart.defaults.font.family}`;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    for (const b of opts.bounds || []) {
+      const py = y.getPixelForValue(b.hr);
+      if (py < area.top || py > area.bottom) continue;
+      ctx.strokeStyle = ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.moveTo(area.left, py);
+      ctx.lineTo(area.right, py);
+      ctx.stroke();
+      ctx.fillText(`Z${b.zone} · ${b.hr}`, area.right - 4, py - 2);
+    }
+    ctx.restore();
+  },
+};
+
 async function openWorkout(id) {
   state.selected = id;
   renderWorkoutList();
@@ -270,17 +300,24 @@ async function openWorkout(id) {
     const step = Math.max(1, Math.round(w.hr.length / 600)); // не больше ~600 точек
     const pts = [];
     for (let i = 0; i < w.hr.length; i += step) pts.push({ x: (i * w.hr_rate_s) / 60, y: w.hr[i] });
+    const bounds = zoneBounds();
+    // Шкала дотягивается до ближайшей границы выше максимума, чтобы была видна зона, в которую не зашли.
+    const dataMax = Math.max(...w.hr);
+    const nextBound = bounds.find((b) => b.hr > dataMax);
+    const opts = baseOpts({ legend: false, tooltip: { callbacks: { title: (c) => `${Math.round(c[0].parsed.x)} мин` } } });
     chart("chart-workout", {
       type: "line",
       data: { datasets: [{ label: "Пульс", data: pts, borderColor: css("--chart-1"), borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, tension: 0.2 }] },
       options: {
-        ...baseOpts({ legend: false, tooltip: { callbacks: { title: (c) => `${Math.round(c[0].parsed.x)} мин` } } }),
+        ...opts,
+        plugins: { ...opts.plugins, zoneLines: { bounds } },
         parsing: false,
         scales: {
           x: { type: "linear", border: { display: false }, ticks: { color: css("--text-muted"), font: { size: 12 }, callback: (v) => `${Math.round(v)} мин` }, grid: { display: false } },
-          y: { border: { display: false }, ticks: { color: css("--text-muted"), font: { size: 12 } }, grid: { color: css("--border") } },
+          y: { suggestedMax: nextBound ? nextBound.hr + 5 : undefined, border: { display: false }, ticks: { color: css("--text-muted"), font: { size: 12 } }, grid: { color: css("--border") } },
         },
       },
+      plugins: [zoneLinesPlugin],
     });
   }
   if (matchMedia("(max-width: 980px)").matches) $("#workout-detail").scrollIntoView({ behavior: "smooth", block: "start" });
