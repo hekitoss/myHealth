@@ -1,14 +1,15 @@
 """Веб-сервер: API для интерфейса, OAuth Polar, чат с AI."""
+import itertools
 import secrets
 from datetime import date as Date, datetime, timedelta
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import ai, db, demo, importer, metrics, polar
-from .config import STATIC_DIR
+from .config import DEFAULT_USER, STATIC_DIR, USERS
 
 db.init()
 app = FastAPI(title="MyHealth")
@@ -24,7 +25,15 @@ async def no_stale_frontend(request, call_next):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
-_oauth_states: set[str] = set()
+_oauth_states: dict[str, str] = {}  # state OAuth -> пользователь, который подключает Polar
+
+
+def current_user(user: str | None = Cookie(default=None)) -> str:
+    """Пользователь из cookie «user», которую ставит переключатель в интерфейсе."""
+    return user if user in USERS else DEFAULT_USER
+
+
+User = Depends(current_user)
 
 
 @app.get("/")
@@ -33,34 +42,36 @@ def index():
 
 
 @app.get("/api/status")
-def status():
+def status(user: str = User):
     return {
+        "user": user,
+        "users": [{"id": k, "name": v} for k, v in USERS.items()],
         "polar_configured": polar.is_configured(),
-        "polar_connected": polar.is_connected(),
+        "polar_connected": polar.is_connected(user),
         "ai_configured": ai.is_configured(),
-        "workouts": db.count_workouts(),
-        "hr_max": db.hr_max(),
-        "last_sync": db.get_setting("last_sync"),
+        "workouts": db.count_workouts(user),
+        "hr_max": db.hr_max(user),
+        "last_sync": db.get_setting(user, "last_sync"),
     }
 
 
 @app.get("/api/workouts")
-def workouts(days: int | None = None):
+def workouts(days: int | None = None, user: str = User):
     since = (datetime.now() - timedelta(days=days)).isoformat() if days else None
-    return db.list_workouts(since)
+    return db.list_workouts(user, since)
 
 
 @app.get("/api/workouts/{wid}")
-def workout(wid: int):
-    w = db.get_workout(wid)
+def workout(wid: int, user: str = User):
+    w = db.get_workout(user, wid)
     if not w:
         raise HTTPException(404, "Тренировка не найдена")
     return w
 
 
 @app.get("/api/weekly")
-def weekly(weeks: int = 12):
-    return metrics.weekly_summary(db.list_workouts(), weeks)
+def weekly(weeks: int = 12, user: str = User):
+    return metrics.weekly_summary(db.list_workouts(user), weeks)
 
 
 class Settings(BaseModel):
@@ -68,9 +79,9 @@ class Settings(BaseModel):
 
 
 @app.put("/api/settings")
-def update_settings(s: Settings):
-    db.set_setting("hr_max", s.hr_max)
-    db.recompute_zones()
+def update_settings(s: Settings, user: str = User):
+    db.set_setting(user, "hr_max", s.hr_max)
+    db.recompute_zones(user)
     return {"ok": True}
 
 
@@ -92,32 +103,32 @@ class PlannedWorkout(BaseModel):
 
 
 @app.get("/api/planned")
-def planned():
-    return db.list_planned()
+def planned(user: str = User):
+    return db.list_planned(user)
 
 
 @app.post("/api/planned")
-def planned_add(p: PlannedWorkout):
-    return db.get_planned(db.add_planned([p.model_dump(mode="json")])[0])
+def planned_add(p: PlannedWorkout, user: str = User):
+    return db.get_planned(user, db.add_planned(user, [p.model_dump(mode="json")])[0])
 
 
 @app.post("/api/planned/bulk")
-def planned_add_many(items: list[PlannedWorkout]):
+def planned_add_many(items: list[PlannedWorkout], user: str = User):
     if len(items) > 200:
         raise HTTPException(400, "Слишком много тренировок за раз")
-    return {"ids": db.add_planned([p.model_dump(mode="json") for p in items])}
+    return {"ids": db.add_planned(user, [p.model_dump(mode="json") for p in items])}
 
 
 @app.put("/api/planned/{pid}")
-def planned_update(pid: int, p: PlannedWorkout):
-    if not db.update_planned(pid, p.model_dump(mode="json")):
+def planned_update(pid: int, p: PlannedWorkout, user: str = User):
+    if not db.update_planned(user, pid, p.model_dump(mode="json")):
         raise HTTPException(404, "Тренировка не найдена")
-    return db.get_planned(pid)
+    return db.get_planned(user, pid)
 
 
 @app.delete("/api/planned/{pid}")
-def planned_delete(pid: int):
-    return {"deleted": db.delete_planned(pid)}
+def planned_delete(pid: int, user: str = User):
+    return {"deleted": db.delete_planned(user, pid)}
 
 
 class PlanRequest(BaseModel):
@@ -129,21 +140,21 @@ class PlanRequest(BaseModel):
 
 
 @app.post("/api/planned/generate")
-def planned_generate(req: PlanRequest):
+def planned_generate(req: PlanRequest, user: str = User):
     try:
-        return ai.generate_plan(req.goal, req.start, req.weeks, req.per_week, req.sports)
+        return ai.generate_plan(user, req.goal, req.start, req.weeks, req.per_week, req.sports)
     except ai.AIError as e:
-        raise HTTPException(502, str(e))
+        raise HTTPException(e.status, str(e))
 
 
 # --- Polar -------------------------------------------------------------------
 
 @app.get("/polar/connect")
-def polar_connect():
+def polar_connect(user: str = User):
     if not polar.is_configured():
         raise HTTPException(400, "Заполните POLAR_CLIENT_ID и POLAR_CLIENT_SECRET в .env")
     state = secrets.token_urlsafe(16)
-    _oauth_states.add(state)
+    _oauth_states[state] = user
     return RedirectResponse(polar.authorization_url(state))
 
 
@@ -151,41 +162,42 @@ def polar_connect():
 def polar_callback(code: str | None = None, state: str | None = None, error: str | None = None):
     if error or not code:
         return RedirectResponse(f"/?polar=error&msg={error or 'no_code'}")
-    if state not in _oauth_states:
+    # Пользователь — тот, кто начал подключение, а не текущая cookie: её могли переключить в другой вкладке.
+    user = _oauth_states.pop(state or "", None)
+    if not user:
         return RedirectResponse("/?polar=error&msg=bad_state")
-    _oauth_states.discard(state)
     try:
-        polar.connect(code)
+        polar.connect(user, code)
     except polar.PolarError:
         return RedirectResponse("/?polar=error&msg=connect_failed")
     return RedirectResponse("/?polar=connected")
 
 
 @app.post("/api/polar/disconnect")
-def polar_disconnect():
-    polar.disconnect()
+def polar_disconnect(user: str = User):
+    polar.disconnect(user)
     return {"ok": True}
 
 
 @app.post("/api/sync")
-def sync():
+def sync(user: str = User):
     try:
-        result = polar.sync()
+        result = polar.sync(user)
     except polar.PolarError as e:
         raise HTTPException(400, str(e))
-    db.set_setting("last_sync", datetime.now().isoformat(timespec="seconds"))
+    db.set_setting(user, "last_sync", datetime.now().isoformat(timespec="seconds"))
     return result
 
 
 # --- импорт и демо -----------------------------------------------------------
 
 @app.post("/api/import")
-async def import_files(files: list[UploadFile] = File(...)):
+async def import_files(files: list[UploadFile] = File(...), user: str = User):
     new = updated = 0
     errors = []
     for f in files:
         try:
-            _, is_new = importer.import_file(f.filename or "", await f.read())
+            _, is_new = importer.import_file(user, f.filename or "", await f.read())
             new += is_new
             updated += not is_new
         except (importer.ImportErrorBadFile, KeyError, ValueError) as e:
@@ -194,13 +206,13 @@ async def import_files(files: list[UploadFile] = File(...)):
 
 
 @app.post("/api/demo")
-def demo_create():
-    return {"created": demo.generate()}
+def demo_create(user: str = User):
+    return {"created": demo.generate(user)}
 
 
 @app.delete("/api/demo")
-def demo_delete():
-    return {"deleted": db.delete_source("demo")}
+def demo_delete(user: str = User):
+    return {"deleted": db.delete_source(user, "demo")}
 
 
 # --- AI ----------------------------------------------------------------------
@@ -214,10 +226,18 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/chat")
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, user: str = User):
+    chunks = ai.chat_stream(user, req.conversation_id, req.message, req.sports, req.days)
+    # Ждём первый кусок до отправки заголовков: если Gemini сразу вернул ошибку (а так бывает почти всегда),
+    # отвечаем её же HTTP-статусом, чтобы код в логе сервера и в интерфейсе совпадал.
+    first = next(chunks, "")
+    if isinstance(first, ai.ChatError):
+        return PlainTextResponse(first, status_code=first.status)
+
     def stream():
         parts, failed = [], False
-        for chunk in ai.chat_stream(req.conversation_id, req.message, req.sports, req.days):
+        for chunk in itertools.chain([first], chunks):
+            # Ошибка посреди ответа: статус 200 уже отправлен, интерфейс поймёт по метке.
             failed = failed or chunk.startswith(ai.ERROR_MARK)
             parts.append(chunk)
             yield chunk
@@ -225,31 +245,31 @@ def chat(req: ChatRequest):
         # ai.py убирает вопрос из истории, и в базе его тоже быть не должно.
         answer = "".join(parts).strip()
         if answer and not failed:
-            db.save_chat_turn(req.conversation_id, req.message, answer, req.sports, req.days)
+            db.save_chat_turn(user, req.conversation_id, req.message, answer, req.sports, req.days)
 
     return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
 
 
 @app.get("/api/chat/sessions")
-def chat_sessions():
-    return db.list_chat_sessions()
+def chat_sessions(user: str = User):
+    return db.list_chat_sessions(user)
 
 
 @app.get("/api/chat/sessions/{session_id}")
-def chat_session(session_id: str):
-    s = db.get_chat_session(session_id)
+def chat_session(session_id: str, user: str = User):
+    s = db.get_chat_session(user, session_id)
     if not s:
         raise HTTPException(404, "Сессия не найдена")
     return s
 
 
 @app.delete("/api/chat/sessions/{session_id}")
-def chat_session_delete(session_id: str):
-    ai.reset(session_id)
-    return {"hidden": db.hide_chat_session(session_id)}
+def chat_session_delete(session_id: str, user: str = User):
+    ai.reset(user, session_id)
+    return {"hidden": db.hide_chat_session(user, session_id)}
 
 
 @app.delete("/api/chat/{conversation_id}")
-def chat_reset(conversation_id: str):
-    ai.reset(conversation_id)
+def chat_reset(conversation_id: str, user: str = User):
+    ai.reset(user, conversation_id)
     return {"ok": True}

@@ -71,10 +71,29 @@ async function loadAll() {
 
 function renderStatus() {
   const s = state.status;
+  renderUserSwitch();
   const parts = [`${s.workouts} тренировок`];
   if (s.polar_connected) parts.push("Polar подключён");
   if (s.last_sync) parts.push(`синхр. ${fmtDate(s.last_sync, true)}`);
   $("#sync-status").textContent = parts.join(" · ");
+}
+
+// --- пользователь ------------------------------------------------------------
+// Сервер берёт пользователя из cookie «user», поэтому её достаточно поставить и перезагрузить
+// страницу: все данные, диалоги и план загрузятся заново уже для другого человека.
+
+function renderUserSwitch() {
+  const { users = [], user } = state.status;
+  const box = $("#user-switch");
+  box.innerHTML = users.map((u) =>
+    `<button type="button" data-user="${u.id}" class="${u.id === user ? "active" : ""}" aria-pressed="${u.id === user}">${u.name}</button>`).join("");
+  box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    if (b.dataset.user === state.status.user) return;
+    document.cookie = `user=${b.dataset.user}; path=/; max-age=${400 * 24 * 3600}; samesite=lax`;
+    location.reload();
+  }));
+  const name = users.find((u) => u.id === user)?.name;
+  document.title = name ? `MyHealth · ${name}` : "MyHealth";
 }
 
 // --- обзор -------------------------------------------------------------------
@@ -348,7 +367,14 @@ async function sendChat(text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversation_id: state.conversationId, message: text, sports: chatScopeSports(), days: state.chatScope.days }),
     });
-    if (!r.ok) throw new Error(`Сервер ответил ${r.status}.`);
+    if (!r.ok) {
+      // Ошибку AI сервер отдаёт её же статусом и текстом с меткой; остальное — FastAPI-ошибка.
+      const body = await r.text();
+      if (body.startsWith(ERROR_MARK)) throw new Error(body.slice(1).trim());
+      let detail;
+      try { detail = JSON.parse(body).detail; } catch {}
+      throw new Error(typeof detail === "string" ? detail : `Сервер ответил ${r.status}.`);
+    }
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     for (;;) {
@@ -794,7 +820,9 @@ function renderSettings() {
   if (!s.polar_configured) {
     html = `<p class="muted">Не заданы POLAR_CLIENT_ID / POLAR_CLIENT_SECRET в файле .env. Инструкция — в README.</p>`;
   } else if (!s.polar_connected) {
-    html = `<p class="muted">Ключи заданы. Осталось разрешить доступ к вашему аккаунту Polar.</p>
+    const name = s.users?.find((u) => u.id === s.user)?.name || "";
+    html = `<p class="muted">Ключи заданы. Осталось разрешить доступ к аккаунту Polar${name ? ` пользователя ${name}` : ""}.
+            Если в Polar Flow в этом браузере вошёл другой человек, сначала выйдите из его аккаунта на flow.polar.com.</p>
             <a class="btn" href="/polar/connect">Подключить Polar</a>`;
   } else {
     html = `<p>Подключено${s.last_sync ? ` · последняя синхронизация ${fmtDate(s.last_sync, true)}` : ""}.</p>

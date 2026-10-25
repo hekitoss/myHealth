@@ -17,17 +17,17 @@ from google import genai
 from google.genai import errors, types
 
 from . import db, metrics
-from .config import AI_CONTEXT_CACHE, AI_MODEL, AI_THINKING, GEMINI_API_KEY
+from .config import AI_CONTEXT_CACHE, AI_MODEL, AI_THINKING, GEMINI_API_KEY, USERS
 
 log = logging.getLogger(__name__)
 
 MAX_CONVERSATIONS = 20
-_conversations: dict[str, list] = {}
+_conversations: dict[tuple, list] = {}  # (пользователь, id диалога) -> история
 
 MAX_CACHED_SELECTIONS = 16
 GEMINI_CACHE_TTL_S = 3600
-_contexts: dict[tuple, str] = {}               # выборка -> системная инструкция
-_gemini_caches: dict[tuple, tuple | None] = {}  # выборка -> (имя кэша Gemini, когда истекает) | None
+_contexts: dict[tuple, str] = {}               # (пользователь, выборка) -> системная инструкция
+_gemini_caches: dict[tuple, tuple | None] = {}  # (пользователь, выборка) -> (имя кэша Gemini, когда истекает) | None
 _cache_version = None
 
 INSTRUCTIONS = """Ты — помощник по анализу тренировок и пульса. Пользователь тренируется с нагрудным
@@ -62,7 +62,20 @@ TOOLS = [types.Tool(function_declarations=[types.FunctionDeclaration(
 
 
 class AIError(Exception):
-    pass
+    """Ошибка запроса к AI; status — HTTP-статус, который отдаёт наш API."""
+
+    def __init__(self, message, status=502):
+        super().__init__(message)
+        self.status = status
+
+
+class ChatError(str):
+    """Кусок потока чата с ошибкой: ERROR_MARK + текст, плюс HTTP-статус для ответа API."""
+
+    def __new__(cls, message, status=502):
+        s = super().__new__(cls, ERROR_MARK + message)
+        s.status = status
+        return s
 
 
 def is_configured():
@@ -73,11 +86,11 @@ def _selection_key(sports, days):
     return (tuple(sorted(set(sports))) if sports else (), days or None)
 
 
-def build_context(sports=None, days=None):
+def build_context(user, sports=None, days=None):
     sports, days = _selection_key(sports, days)
     since = date.today() - timedelta(days=days) if days else None
     workouts = [
-        w for w in reversed(db.list_workouts(since.isoformat() if since else None))  # по возрастанию даты
+        w for w in reversed(db.list_workouts(user, since.isoformat() if since else None))  # по возрастанию даты
         if not sports or w["sport"] in sports
     ]
     lines = ["id,дата,время,спорт,мин,км,ср_пульс,макс_пульс,ккал,нагрузка,z1_мин,z2_мин,z3_мин,z4_мин,z5_мин"]
@@ -101,16 +114,16 @@ def build_context(sports=None, days=None):
         (f"; последние {days} дн. (с {since.isoformat()})" if days else "; за всё время")
     return (
         f"## Выборка\n{scope}\n\n"
-        f"## Профиль\nHRmax для зон: {db.hr_max()} уд/мин. Зоны: Z1 50–60%, Z2 60–70%, Z3 70–80%, "
+        f"## Профиль\nИмя: {USERS.get(user, user)}. HRmax для зон: {db.hr_max(user)} уд/мин. Зоны: Z1 50–60%, Z2 60–70%, Z3 70–80%, "
         f"Z4 80–90%, Z5 90–100% HRmax.\n\n"
         f"## Тренировки ({len(workouts)} шт.)\n" + "\n".join(lines) +
         f"\n\n## По неделям (последние {weeks})\n" + "\n".join(week_lines) +
-        _planned_context()
+        _planned_context(user)
     )
 
 
-def _planned_context():
-    planned = db.list_planned(date.today().isoformat())
+def _planned_context(user):
+    planned = db.list_planned(user, date.today().isoformat())
     if not planned:
         return ""
     lines = ["id,дата,спорт,название,мин,км,зона,пульс,темп,выполнено"]
@@ -124,6 +137,7 @@ def _planned_context():
 
 
 def _system_instruction(key):
+    """key — (пользователь, виды спорта, дней)."""
     """Готовая системная инструкция для выборки: собирается один раз, пока не изменились данные."""
     global _cache_version
     version = (db.data_version(), date.today())  # «последние N дней» сдвигаются со сменой даты
@@ -171,14 +185,14 @@ def _drop_caches():
                 pass  # истечёт сам по TTL
 
 
-def _run_tool(name, args):
+def _run_tool(user, name, args):
     if name != "get_workout_hr":
         return {"error": f"неизвестный инструмент {name}"}, True
     wid = _int_arg(args.get("workout_id"))
     step = _int_arg(args.get("step_s"), 30)
     if not isinstance(wid, int) or not isinstance(step, int) or step < 1:
         return {"error": "workout_id и step_s должны быть целыми положительными числами"}, True
-    w = db.get_workout(wid)
+    w = db.get_workout(user, wid)
     if not w:
         return {"error": f"тренировки {wid} нет"}, True
     if not w["hr"]:
@@ -203,17 +217,17 @@ def _int_arg(value, default=None):
     return value
 
 
-def _saved_history(conversation_id):
+def _saved_history(user, conversation_id):
     """История сохранённой сессии (только текст) — чтобы продолжить её после перезапуска сервера."""
-    saved = db.get_chat_session(conversation_id)
+    saved = db.get_chat_session(user, conversation_id)
     return [
         types.Content(role="user" if m["role"] == "user" else "model", parts=[types.Part(text=m["text"])])
         for m in (saved["messages"] if saved else [])
     ]
 
 
-def reset(conversation_id):
-    _conversations.pop(conversation_id, None)
+def reset(user, conversation_id):
+    _conversations.pop((user, conversation_id), None)
 
 
 # Метка ошибки в потоке ответа: после неё идёт короткий текст ошибки, и поток заканчивается.
@@ -221,27 +235,28 @@ def reset(conversation_id):
 ERROR_MARK = "\x1e"
 
 
-def chat_stream(conversation_id, user_message, sports=None, days=None):
+def chat_stream(user, conversation_id, user_message, sports=None, days=None):
     """Генератор кусков текста ответа. Историю диалога держим в памяти процесса.
 
     sports/days задают выборку тренировок для контекста (None — все виды / всё время).
     При ошибке последним куском идёт ERROR_MARK + текст, а вопрос убирается из истории.
     """
-    if conversation_id not in _conversations and len(_conversations) >= MAX_CONVERSATIONS:
+    conv = (user, conversation_id)
+    if conv not in _conversations and len(_conversations) >= MAX_CONVERSATIONS:
         _conversations.pop(next(iter(_conversations)))
-    if conversation_id not in _conversations:
-        _conversations[conversation_id] = _saved_history(conversation_id)
-    contents = _conversations[conversation_id]
+    if conv not in _conversations:
+        _conversations[conv] = _saved_history(user, conversation_id)
+    contents = _conversations[conv]
     user_turn = types.Content(role="user", parts=[types.Part(text=user_message)])
     contents.append(user_turn)
 
     if not is_configured():
         contents.pop()
-        yield ERROR_MARK + "Не задан ключ Gemini API: добавьте GEMINI_API_KEY в .env и перезапустите сервер."
+        yield ChatError("Не задан ключ Gemini API: добавьте GEMINI_API_KEY в .env и перезапустите сервер.", 503)
         return
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    key = _selection_key(sports, days)
+    key = (user, *_selection_key(sports, days))
     system = _system_instruction(key)
     cached = _gemini_cache(client, key, system)
     config = types.GenerateContentConfig(
@@ -282,12 +297,12 @@ def chat_stream(conversation_id, user_message, sports=None, days=None):
             if not calls:
                 if not any(p.text and not p.thought for p in parts):
                     _rollback(contents, user_turn)
-                    yield ERROR_MARK + "Модель вернула пустой ответ."
+                    yield ChatError("Модель вернула пустой ответ.")
                 return
 
             results = []
             for call in calls:
-                result, is_error = _run_tool(call.name, dict(call.args or {}))
+                result, is_error = _run_tool(user, call.name, dict(call.args or {}))
                 results.append(types.Part.from_function_response(
                     name=call.name,
                     response={"error": result["error"]} if is_error else {"output": result},
@@ -297,27 +312,40 @@ def chat_stream(conversation_id, user_message, sports=None, days=None):
     except (errors.APIError, httpx.TransportError) as e:
         log.warning("Ошибка Gemini API в чате: %s", e)
         _rollback(contents, user_turn)
-        yield ERROR_MARK + _error_text(e)
+        yield ChatError(_error_text(e), _error_status(e))
     except GeneratorExit:  # браузер закрыл соединение посреди ответа
         _rollback(contents, user_turn)
         raise
     except Exception as e:  # иначе поток молча обрывается и в чате пусто
         log.exception("Ошибка в чате с AI")
         _rollback(contents, user_turn)
-        yield ERROR_MARK + f"Внутренняя ошибка сервера ({type(e).__name__}), подробности в окне сервера."
+        yield ChatError(f"Внутренняя ошибка сервера ({type(e).__name__}), подробности в окне сервера.", 500)
 
 
 def _error_text(e):
+    """Код и текст ошибки ровно в том виде, в каком их вернул Gemini, плюс подсказка для частых случаев."""
+    if isinstance(e, httpx.TimeoutException):
+        return "Gemini API не ответил вовремя (таймаут соединения)."
     if isinstance(e, httpx.TransportError):
-        return "Нет соединения с Gemini API."
-    if e.code in (401, 403) or (e.code == 400 and "API key" in (e.message or "")):
-        return "Ключ Gemini API не подошёл. Проверьте GEMINI_API_KEY в .env."
-    if e.code == 429:
-        return "Исчерпан лимит запросов к Gemini API, попробуйте через минуту (или завтра, если кончился дневной)."
-    if e.code and e.code >= 500:
-        return f"Gemini API временно недоступен ({e.code})."
+        return f"Нет соединения с Gemini API ({type(e).__name__})."
     message = " ".join((e.message or "").split())
-    return f"Ошибка Gemini API ({e.code}): {message[:150] + '…' if len(message) > 150 else message}"
+    if len(message) > 200:
+        message = message[:199] + "…"
+    text = f"Gemini API ответил {e.code}" + (f" {e.status}" if e.status else "") + (f": {message}" if message else ".")
+    if e.code in (401, 403) or (e.code == 400 and "API key" in (e.message or "")):
+        text += " Проверьте GEMINI_API_KEY в .env."
+    elif e.code == 429:
+        text += " Лимит запросов исчерпан, попробуйте через минуту (или завтра, если кончился дневной)."
+    return text
+
+
+def _error_status(e):
+    """HTTP-статус для нашего ответа: код Gemini как есть, а без ответа от Gemini — 502/504."""
+    if isinstance(e, httpx.TimeoutException):
+        return 504
+    if isinstance(e, httpx.TransportError):
+        return 502
+    return e.code if isinstance(e.code, int) and 400 <= e.code <= 599 else 502
 
 
 def _rollback(contents, user_turn):
@@ -374,12 +402,12 @@ def _plan_schema(sports):
     }
 
 
-def generate_plan(goal, start, weeks, per_week, sports=None):
+def generate_plan(user, goal, start, weeks, per_week, sports=None):
     """Черновик плана от Gemini: {"summary", "workouts"}. Ничего не сохраняет — пользователь сначала смотрит."""
     if not is_configured():
-        raise AIError("Не найден ключ Gemini API: добавьте GEMINI_API_KEY в файл .env и перезапустите приложение.")
+        raise AIError("Не задан ключ Gemini API: добавьте GEMINI_API_KEY в .env и перезапустите сервер.", 503)
     end = start + timedelta(days=weeks * 7 - 1)
-    history = {w["sport"] for w in db.list_workouts() if w["sport"]}
+    history = {w["sport"] for w in db.list_workouts(user) if w["sport"]}
     allowed = PLAN_SPORTS + sorted(history - set(PLAN_SPORTS))
     wanted = [s for s in sports or [] if s in allowed]
     prompt = (
@@ -388,7 +416,7 @@ def generate_plan(goal, start, weeks, per_week, sports=None):
         f"примерно {per_week} тренировок в неделю.\n"
         f"Виды спорта: {', '.join(wanted) if wanted else 'выбери сам по истории и цели'}."
     )
-    system = (f"{PLAN_INSTRUCTIONS}\n\n{build_context(None, PLAN_HISTORY_DAYS)}\n\n"
+    system = (f"{PLAN_INSTRUCTIONS}\n\n{build_context(user, None, PLAN_HISTORY_DAYS)}\n\n"
               f"Сегодня {date.today().isoformat()}.")
     client = genai.Client(api_key=GEMINI_API_KEY)
     try:
@@ -400,7 +428,7 @@ def generate_plan(goal, start, weeks, per_week, sports=None):
             max_output_tokens=32000,
         ))
     except (errors.APIError, httpx.TransportError) as e:
-        raise AIError(_error_text(e)) from e
+        raise AIError(_error_text(e), _error_status(e)) from e
     try:
         data = json.loads(resp.text or "")
     except ValueError:

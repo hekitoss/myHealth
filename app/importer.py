@@ -17,7 +17,7 @@ class ImportErrorBadFile(Exception):
     pass
 
 
-def import_file(name, content):
+def import_file(user, name, content):
     """Импортирует один файл. Возвращает (id, is_new)."""
     if content[:2] == b"\x1f\x8b":
         content = gzip.decompress(content)
@@ -29,7 +29,7 @@ def import_file(name, content):
         workout, hr = parse_polar_csv(content.decode("utf-8-sig"))
     else:
         raise ImportErrorBadFile("поддерживаются только .tcx, .tcx.gz и .csv")
-    return db.upsert_workout(workout, hr, 1)
+    return db.upsert_workout(user, workout, hr, 1)
 
 
 def parse_tcx(content):

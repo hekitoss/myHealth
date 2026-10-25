@@ -15,7 +15,7 @@ SPORTS = [
 ]
 
 
-def generate(days=90, seed=42):
+def generate(user, days=90, seed=42):
     rnd = random.Random(seed)
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     created = 0
@@ -30,7 +30,7 @@ def generate(days=90, seed=42):
             continue
         base_today = base - fitness + rnd.uniform(-4, 4)
         hr = _hr_series(rnd, minutes * 60, base_today, amp, intervals)
-        db.upsert_workout({
+        db.upsert_workout(user, {
             "source": "demo",
             "external_id": start.isoformat(),
             "start_time": start.isoformat(timespec="seconds"),

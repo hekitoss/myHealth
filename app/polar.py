@@ -26,8 +26,8 @@ def is_configured():
     return bool(POLAR_CLIENT_ID and POLAR_CLIENT_SECRET)
 
 
-def is_connected():
-    return bool(db.get_setting("polar_token"))
+def is_connected(user):
+    return bool(db.get_setting(user, "polar_token"))
 
 
 def authorization_url(state):
@@ -40,8 +40,11 @@ def authorization_url(state):
     return f"{AUTH_URL}?{urlencode(params)}"
 
 
-def connect(code):
-    """Меняет code на токен и регистрирует пользователя в нашем клиенте AccessLink."""
+def connect(user, code):
+    """Меняет code на токен и регистрирует аккаунт Polar в нашем клиенте AccessLink.
+
+    Токен сохраняется у пользователя приложения user: у каждого свой аккаунт Polar.
+    """
     r = requests.post(
         TOKEN_URL,
         auth=(POLAR_CLIENT_ID, POLAR_CLIENT_SECRET),
@@ -63,22 +66,22 @@ def connect(code):
     if r.status_code not in (200, 201, 409):  # 409 — пользователь уже зарегистрирован
         raise PolarError(f"Не удалось зарегистрировать пользователя: {r.status_code} {r.text}")
 
-    db.set_setting("polar_token", token)
-    db.set_setting("polar_user_id", user_id)
+    db.set_setting(user, "polar_token", token)
+    db.set_setting(user, "polar_user_id", user_id)
 
 
-def disconnect():
-    db.delete_setting("polar_token")
-    db.delete_setting("polar_user_id")
+def disconnect(user):
+    db.delete_setting(user, "polar_token")
+    db.delete_setting(user, "polar_user_id")
 
 
 def _headers(token):
     return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
 
-def sync():
+def sync(user):
     """Скачивает доступные тренировки с пульсом и зонами. Возвращает {'new': n, 'updated': m}."""
-    token = db.get_setting("polar_token")
+    token = db.get_setting(user, "polar_token")
     if not token:
         raise PolarError("Polar не подключён")
     r = requests.get(
@@ -88,7 +91,7 @@ def sync():
         timeout=60,
     )
     if r.status_code == 401:
-        disconnect()
+        disconnect(user)
         raise PolarError("Токен Polar недействителен, подключитесь заново")
     if r.status_code == 204:
         return {"new": 0, "updated": 0}
@@ -98,7 +101,7 @@ def sync():
     new = updated = 0
     for ex in r.json():
         workout, hr, rate = _map_exercise(ex)
-        _, is_new = db.upsert_workout(workout, hr, rate)
+        _, is_new = db.upsert_workout(user, workout, hr, rate)
         new += is_new
         updated += not is_new
     return {"new": new, "updated": updated}

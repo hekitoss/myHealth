@@ -30,3 +30,8 @@ AI_THINKING = os.getenv("AI_THINKING", "high")  # minimal | low | medium | high
 AI_CONTEXT_CACHE = os.getenv("AI_CONTEXT_CACHE", "implicit").lower()
 
 DEFAULT_HR_MAX = int(os.getenv("HR_MAX", "190"))
+
+# Пользователи приложения: у каждого свои тренировки, Polar, настройки, план и диалоги с AI.
+# Ключ хранится в базе (user_id) и в cookie «user», значение — имя в интерфейсе.
+USERS = {"nikita": "Никита", "natasha": "Наташа"}
+DEFAULT_USER = "nikita"  # ему принадлежат данные, накопленные до появления пользователей

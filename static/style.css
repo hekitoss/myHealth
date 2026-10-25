@@ -84,6 +84,10 @@ button, a, input, select, textarea {
   padding: 24px 12px; display: flex; flex-direction: column; gap: 24px;
   position: sticky; top: 0; height: 100vh;
 }
+.sidebar-top { display: flex; flex-direction: column; gap: 16px; }
+.user-switch { margin: 0 10px; }
+.user-switch:empty { display: none; }
+.user-switch button { flex: 1; }
 .brand { font-weight: 650; font-size: 17px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 8px; padding: 0 10px; }
 .brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); }
 nav { display: flex; flex-direction: column; gap: 2px; }
@@ -412,6 +416,9 @@ label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--pr
     flex-direction: row; align-items: center; gap: 16px;
     padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--border);
   }
+  .sidebar-top { flex-direction: row; align-items: center; gap: 12px; flex-shrink: 0; }
+  .user-switch { margin: 0; }
+  .user-switch button { height: 28px; padding: 0 10px; }
   nav { flex-direction: row; overflow-x: auto; scrollbar-width: none; min-width: 0; }
   nav::-webkit-scrollbar { display: none; }
   .sidebar-foot { display: none; }
@@ -426,6 +433,7 @@ label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--pr
 
 @media (max-width: 640px) {
   .sidebar { flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 16px 8px; }
+  .sidebar-top { justify-content: space-between; }
   .brand { padding: 0 2px; }
   nav { margin: 0 -16px; padding: 0 16px; }
   .nav-item { height: 38px; flex-shrink: 0; }
