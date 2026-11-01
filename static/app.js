@@ -53,7 +53,10 @@ function show(view) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("hidden", v.id !== `view-${view}`));
   try { localStorage.setItem("view", view); } catch {}
 }
-document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
+document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => {
+  show(b.dataset.view);
+  if (b.dataset.view === "workouts") openFirstWorkout();
+}));
 
 // --- загрузка данных ---------------------------------------------------------
 
@@ -76,6 +79,7 @@ function renderStatus() {
   if (s.polar_connected) parts.push("Polar подключён");
   if (s.last_sync) parts.push(`синхр. ${fmtDate(s.last_sync, true)}`);
   $("#sync-status").textContent = parts.join(" · ");
+  $("#workouts-sync").classList.toggle("hidden", !s.polar_connected);
 }
 
 // --- пользователь ------------------------------------------------------------
@@ -240,7 +244,19 @@ function renderWorkoutList() {
   $("#workout-list").innerHTML = list.map(rowHtml).join("") || `<p class="empty">Нет тренировок</p>`;
   bindRows($("#workout-list"), false);
 }
-$("#sport-filter").addEventListener("change", renderWorkoutList);
+$("#sport-filter").addEventListener("change", openFirstWorkout);
+
+// Открыть первую (самую свежую) тренировку списка с учётом фильтра.
+function openFirstWorkout() {
+  const sel = $("#sport-filter").value;
+  const first = state.workouts.find((w) => !sel || w.sport === sel);
+  if (first) openWorkout(first.id);
+  else {
+    state.selected = null;
+    renderWorkoutList();
+    $("#workout-detail").innerHTML = `<p class="empty">Выберите тренировку из списка.</p>`;
+  }
+}
 
 // Границы зон пульса (50/60/70/80/90% HRmax, как в metrics.ZONE_BOUNDS) — пунктир с подписью.
 function zoneBounds() {
@@ -699,11 +715,15 @@ function renderNextPlanned() {
 
 function renderPlan() {
   renderNextPlanned();
-  const today = isoDay(new Date());
-  const items = state.planned.filter((p) => $("#plan-show-past").checked || p.date >= today);
+  // Сначала невыполненные (включая просроченные) по возрастанию даты, затем выполненные — свежие сверху.
+  const todo = state.planned.filter((p) => !p.done);
+  const done = state.planned.filter((p) => p.done).reverse();
+  // Каждая группа — своя карточка с заголовком, чтобы группы не сливались.
+  const section = (title, items) => items.length
+    ? `<div class="card list-card plan-list"><h2 class="psection">${title}<span>${items.length}</span></h2>${byWeekHtml(items, (p) => planRowHtml(p))}</div>` : "";
   const box = $("#plan-list");
-  box.innerHTML = items.length ? byWeekHtml(items, (p) => planRowHtml(p))
-    : `<p class="empty">${state.planned.length ? "Ближайших тренировок в плане нет." : "Добавьте тренировку или попросите AI составить план под цель."}</p>`;
+  box.innerHTML = state.planned.length ? section("Предстоящие тренировки", todo) + section("Выполненные", done)
+    : `<div class="card list-card plan-list"><p class="empty">Добавьте тренировку или попросите AI составить план под цель.</p></div>`;
   box.querySelectorAll(".prow").forEach((row) => {
     const p = state.planned.find((x) => x.id === Number(row.dataset.id));
     row.addEventListener("click", (e) => { if (!e.target.closest(".pcheck")) openPlanDialog(p); });
@@ -711,7 +731,6 @@ function renderPlan() {
     row.querySelector(".pcheck").addEventListener("change", (e) => savePlanned({ ...p, done: e.target.checked }, p.id));
   });
 }
-$("#plan-show-past").addEventListener("change", renderPlan);
 
 async function savePlanned(data, id) {
   try {
@@ -868,20 +887,34 @@ function renderSettings() {
             <button class="btn secondary" id="polar-off">Отключить</button></div>`;
   }
   $("#polar-box").innerHTML = html;
-  $("#sync-btn")?.addEventListener("click", async (e) => {
-    e.target.disabled = true;
-    try {
-      const r = await api("/api/sync", { method: "POST" });
-      banner(`Синхронизация: новых ${r.new}, обновлено ${r.updated}.`);
-      await loadAll();
-    } catch (err) { banner(`Ошибка синхронизации: ${err.message}`, true); }
-    e.target.disabled = false;
-  });
+  $("#sync-btn")?.addEventListener("click", (e) => syncPolar(e.currentTarget));
   $("#polar-off")?.addEventListener("click", async () => {
     await api("/api/polar/disconnect", { method: "POST" });
     await loadAll();
   });
 }
+
+// Синхронизация с Polar для текущего пользователя (кнопки в настройках и на странице тренировок).
+async function syncPolar(btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Синхронизация…";
+  try {
+    const r = await api("/api/sync", { method: "POST" });
+    banner(`Синхронизация: новых ${r.new}, обновлено ${r.updated}.`);
+    await loadAll();
+    return r;
+  } catch (err) {
+    banner(`Ошибка синхронизации: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+$("#workouts-sync").addEventListener("click", async (e) => {
+  const r = await syncPolar(e.currentTarget);
+  if (r?.new) openFirstWorkout(); // появились новые — показать самую свежую
+});
 
 $("#import-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -927,7 +960,9 @@ $("#demo-del").addEventListener("click", async () => {
   let view = params.has("polar") ? "settings" : "overview";
   try { view = params.has("polar") ? view : localStorage.getItem("view") || view; } catch {}
   show(view);
-  loadAll().catch((e) => banner(`Ошибка загрузки: ${e.message}`, true));
+  loadAll()
+    .then(() => { if (view === "workouts") openFirstWorkout(); })
+    .catch((e) => banner(`Ошибка загрузки: ${e.message}`, true));
   loadChatSessions();
   // Смена системной темы: перерисовать графики с новыми цветами токенов.
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {

@@ -358,7 +358,9 @@ input[type=file]:focus-visible::file-selector-button { box-shadow: 0 0 0 3px var
 .ztag i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
 label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
 label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--primary); }
-#view-plan > label.check { align-self: flex-start; }
+.plan-groups { display: flex; flex-direction: column; gap: 16px; }
+.psection { display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 16px; border-bottom: 1px solid var(--border); }
+.psection span { font-size: 13px; font-weight: 500; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
 .plan-form { display: flex; flex-direction: column; gap: 16px; }
 .plan-form > p { margin: 0; }
@@ -474,6 +476,9 @@ label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--pr
 
   .chat-card { height: calc(100dvh - 200px); min-height: 360px; }
   #view-chat .view-head .row { width: 100%; flex-wrap: nowrap; }
+  #view-workouts .view-head .row { width: 100%; flex-wrap: nowrap; }
+  #view-workouts .view-head .row select { flex: 1; min-width: 0; }
+  #view-workouts .view-head .row > .btn { flex: 0 0 auto; }
   #view-chat .view-head .row > .btn { flex: 1 1 0; }
   .chat-scope select, .chat-scope .seg { width: 100%; }
   .chat-scope .seg button { flex: 1; height: 36px; padding: 0 6px; }

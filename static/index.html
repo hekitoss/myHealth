@@ -70,7 +70,10 @@
     <section class="view hidden" id="view-workouts">
       <header class="view-head">
         <h1>Тренировки</h1>
-        <select id="sport-filter" aria-label="Вид спорта"><option value="">Все виды</option></select>
+        <div class="row">
+          <select id="sport-filter" aria-label="Вид спорта"><option value="">Все виды</option></select>
+          <button class="btn secondary hidden" id="workouts-sync">Синхронизировать</button>
+        </div>
       </header>
       <div class="split">
         <div class="card list-card"><div id="workout-list"></div></div>
@@ -118,8 +121,7 @@
         <div id="plan-proposal"></div>
       </div>
 
-      <div class="card list-card plan-list"><div id="plan-list"></div></div>
-      <label class="check muted"><input type="checkbox" id="plan-show-past"> Показывать прошедшие</label>
+      <div class="plan-groups" id="plan-list"></div>
 
       <dialog class="dialog" id="plan-dialog" aria-labelledby="plan-dialog-title">
         <form id="plan-form" class="plan-form">
